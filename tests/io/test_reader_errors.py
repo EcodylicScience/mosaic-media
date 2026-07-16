@@ -54,14 +54,18 @@ def test_del_after_failed_init_does_not_raise(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # When __init__ raises before finishing, finalization must not add
-    # AttributeError noise from close() touching an unset attribute. Capture any
-    # exception ffmpeg-less construction leaks through the garbage collector.
-    monkeypatch.setattr("mosaic_media.io.reader.ffmpeg_available", lambda: False)
+    # AttributeError noise from close() touching an unset attribute. Force a
+    # construction failure through a seam __init__ still calls (path
+    # resolution) and capture anything the garbage collector reports.
+    def _boom(_self: object) -> Path:
+        raise RuntimeError("forced init failure")
+
+    monkeypatch.setattr(Path, "expanduser", _boom)
     unraisable: list[object] = []
     monkeypatch.setattr(
         sys, "unraisablehook", lambda hook_args: unraisable.append(hook_args)
     )
-    with pytest.raises(MediaProbeError):
+    with pytest.raises(RuntimeError):
         _ = VideoReader("nonexistent.mp4")
     _ = gc.collect()
     assert not any(
