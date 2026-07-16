@@ -80,3 +80,8 @@ def test_resolution_mismatch_raises(
     small = generate_video(root / "small.mp4", frames=10, fps=30.0, size=(160, 120))
     with pytest.raises(ValueError):
         _ = MultiVideoReader([big, small])
+
+
+def test_empty_path_list_rejected() -> None:
+    with pytest.raises(ValueError):
+        _ = MultiVideoReader([])

@@ -93,7 +93,22 @@ class FFmpegVideoWriter:
         if process is None or process.stdin is None:
             message = "ffmpeg process is not running"
             raise MediaProbeError(message)
-        _ = process.stdin.write(frame.tobytes())
+        expected_shape = (self._height, self._width, 3)
+        if frame.shape != expected_shape or frame.dtype != numpy.uint8:
+            message = f"frame shape {tuple(frame.shape)} dtype {frame.dtype} does not match writer geometry {expected_shape} dtype uint8"
+            raise MediaProbeError(message)
+        try:
+            _ = process.stdin.write(frame.tobytes())
+        except BrokenPipeError as exc:
+            # ffmpeg died and closed the read end of the pipe. Reap it for the
+            # real exit code so the message says why rather than losing the
+            # frame silently.
+            try:
+                returncode = process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                returncode = None
+            message = f"ffmpeg closed its input pipe while writing {self._output_path} (exit code {returncode})"
+            raise MediaProbeError(message) from exc
         self._frames_written += 1
 
     def close(self) -> None:
@@ -105,15 +120,23 @@ class FFmpegVideoWriter:
         if process is None:
             return
         if process.stdin is not None:
-            process.stdin.close()
+            try:
+                process.stdin.close()
+            except BrokenPipeError:
+                # A dead ffmpeg leaves buffered stdin bytes with nowhere to go;
+                # the nonzero exit below is the real diagnosis, not this flush.
+                pass
         try:
-            _ = process.wait(timeout=30)
+            returncode = process.wait(timeout=30)
         except subprocess.TimeoutExpired:
             process.kill()
             try:
-                _ = process.wait(timeout=5)
+                returncode = process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                pass
+                return
+        if returncode != 0:
+            message = f"ffmpeg exited with code {returncode} writing {self._output_path}"
+            raise MediaProbeError(message)
 
     def __enter__(self) -> "FFmpegVideoWriter":
         return self
