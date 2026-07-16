@@ -237,8 +237,17 @@ app.add_typer(media_app, name="media")
 which gives a toolkit user the native form:
 
 ```bash
-mosaic media transcode video.mp4 --target streaming
+mosaic media transcode video.mp4 --target playback --output media/
 ```
+
+`--output` is required and takes a file path or a directory. Given a directory,
+the derivative's filename is derived from the source stem with an `.mp4`
+container; given a file path, that path is used as-is. The resolved output may
+never equal the source -- the original upload is preserved in every case, so the
+converter refuses to write over it. The package holds no knowledge of any
+dataset directory layout: a convention like keeping originals in `media_raw/`
+and transcodes in `media/` belongs to the caller, exactly like browser policy.
+Re-running the same transcode replaces its output atomically.
 
 The dependency runs `mosaic -> mosaic-media`, one way, no cycle.
 
@@ -327,6 +336,15 @@ Two properties of the existing verdict worth preserving through the move:
 The transcoded output is re-probed as its acceptance test. A variable-rate
 source resampled to a constant rate can still carry residual drift, so the
 verdict runs on both sides of the transcode.
+
+A red verdict on the transcoded output is a terminal failure. The converter
+raises and the job is marked failed for a human to see; nothing in the stack
+ever responds to acceptance failure by scheduling another transcode. Re-running
+the same deterministic command on the same input would only reproduce the same
+red output, so a retry could loop. Retries are reserved for transient faults (a
+killed subprocess, a full disk). Confidence that a command produces clean output
+is established before any job runs, by the development-time corpus acceptance
+tests.
 
 
 ## Metadata authority
