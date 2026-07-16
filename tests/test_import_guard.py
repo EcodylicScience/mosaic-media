@@ -11,11 +11,11 @@ module under test cannot swallow the violation. The core is kept dependency-free
 on purpose: the transcode CLI must start on a machine that has ffmpeg and nothing
 else.
 
-Two later additions append guard tests to this file: the frame reader is checked
-to import without numpy through the core path (io-without-numpy), and the command
-line app to load without typer where it should not need it (cli-without-typer).
-Both call `_run_guarded`; the helper is the single home for the poison-finder
-idiom, and those appends are expected.
+Beyond the core checks, each layer's dependency ceiling is pinned from both
+sides: the io subpackage imports without typer and cv2 but must fail with numpy
+poisoned, and the cli app fails with typer poisoned while importing without
+numpy. Every check calls `_run_guarded`; the helper is the single home for the
+poison-finder idiom.
 """
 
 import subprocess
