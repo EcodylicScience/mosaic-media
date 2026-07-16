@@ -28,7 +28,15 @@ def ffmpeg_available() -> bool:
 
 
 def nvdec_available() -> bool:
-    """True when ffmpeg advertises CUDA/NVDEC hardware decoding. Cached."""
+    """True when ffmpeg can initialize a CUDA device for decoding. Cached.
+
+    `ffmpeg -hwaccels` lists cuda whenever the binary was compiled with the
+    hwaccel, even on a host with no GPU and no CUDA runtime; a stock Ubuntu
+    ffmpeg reports it on a machine that cannot decode a single frame on the
+    device. Actually initializing a CUDA device is the only reliable check, so
+    this runs a tiny null decode with `-init_hw_device cuda` and treats a zero
+    exit as available. Any device-load or initialization failure exits non-zero.
+    """
     global _nvdec_ok
     if _nvdec_ok is None:
         if not ffmpeg_available():
@@ -36,12 +44,27 @@ def nvdec_available() -> bool:
         else:
             try:
                 result = subprocess.run(
-                    ["ffmpeg", "-hwaccels"],
+                    [
+                        "ffmpeg",
+                        "-v",
+                        "error",
+                        "-init_hw_device",
+                        "cuda",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "nullsrc=s=64x64:d=0.05",
+                        "-frames:v",
+                        "1",
+                        "-f",
+                        "null",
+                        "-",
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=_PROBE_TIMEOUT_SECONDS,
                 )
-                _nvdec_ok = "cuda" in result.stdout.lower()
+                _nvdec_ok = result.returncode == 0
             except (OSError, subprocess.SubprocessError):
                 _nvdec_ok = False
     return _nvdec_ok

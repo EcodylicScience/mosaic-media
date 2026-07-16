@@ -25,10 +25,16 @@ def reset_caches(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class FakeRun:
-    """A subprocess.run stand-in that returns fixed stdout and records calls."""
+    """A subprocess.run stand-in returning a fixed exit code and stdout.
 
-    def __init__(self, stdout: str) -> None:
+    The exit code drives the nvdec device probe (zero means the CUDA device
+    initialized); the stdout drives the encoder-list parsing. Recorded commands
+    let a test pin the exact argument vector.
+    """
+
+    def __init__(self, stdout: str, returncode: int = 0) -> None:
         self.stdout: str = stdout
+        self.returncode: int = returncode
         self.commands: list[list[str]] = []
 
     def __call__(
@@ -40,7 +46,9 @@ class FakeRun:
         timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         self.commands.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout=self.stdout, stderr="")
+        return subprocess.CompletedProcess(
+            command, self.returncode, stdout=self.stdout, stderr=""
+        )
 
 
 class RaisingRun:
@@ -95,22 +103,38 @@ def test_ffmpeg_availability_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == 1
 
 
-def test_nvdec_available_reads_the_hwaccels_list(
+_NVDEC_PROBE_COMMAND = [
+    "ffmpeg",
+    "-v",
+    "error",
+    "-init_hw_device",
+    "cuda",
+    "-f",
+    "lavfi",
+    "-i",
+    "nullsrc=s=64x64:d=0.05",
+    "-frames:v",
+    "1",
+    "-f",
+    "null",
+    "-",
+]
+
+
+def test_nvdec_available_when_the_cuda_device_initializes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(shutil, "which", present)
-    monkeypatch.setattr(
-        subprocess, "run", FakeRun("Hardware acceleration methods:\ncuda\nvaapi\n")
-    )
+    monkeypatch.setattr(subprocess, "run", FakeRun("", returncode=0))
     assert hwaccel.nvdec_available() is True
 
 
-def test_nvdec_available_is_false_without_cuda(
+def test_nvdec_unavailable_when_the_cuda_device_fails_to_initialize(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(shutil, "which", present)
     monkeypatch.setattr(
-        subprocess, "run", FakeRun("Hardware acceleration methods:\nvaapi\n")
+        subprocess, "run", FakeRun("Cannot load libcuda.so.1\n", returncode=255)
     )
     assert hwaccel.nvdec_available() is False
 
@@ -118,7 +142,7 @@ def test_nvdec_available_is_false_without_cuda(
 def test_nvdec_skips_the_subprocess_without_ffmpeg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake = FakeRun("cuda")
+    fake = FakeRun("", returncode=0)
     monkeypatch.setattr(shutil, "which", absent)
     monkeypatch.setattr(subprocess, "run", fake)
     assert hwaccel.nvdec_available() is False
@@ -126,12 +150,12 @@ def test_nvdec_skips_the_subprocess_without_ffmpeg(
 
 
 def test_nvdec_probe_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake = FakeRun("cuda\n")
+    fake = FakeRun("", returncode=0)
     monkeypatch.setattr(shutil, "which", present)
     monkeypatch.setattr(subprocess, "run", fake)
     assert hwaccel.nvdec_available() is True
     assert hwaccel.nvdec_available() is True
-    assert fake.commands == [["ffmpeg", "-hwaccels"]]
+    assert fake.commands == [_NVDEC_PROBE_COMMAND]
 
 
 def test_encoder_available_finds_named_encoders(

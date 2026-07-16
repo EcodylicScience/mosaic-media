@@ -235,6 +235,25 @@ class VideoReader:
         except subprocess.TimeoutExpired:
             pass
 
+    def _reap_after_eof(self) -> None:
+        """Confirm ffmpeg exited cleanly after a read reached end of stream.
+
+        A read returns no frame both at a genuine end of stream and when ffmpeg
+        aborts on a truncated or otherwise undecodable file, and the two are
+        distinguishable only by the process exit status. Reap the process and
+        raise when it exited non-zero; a zero exit is a normal stop.
+        """
+        process = self._process
+        if process is None:
+            return
+        try:
+            returncode = process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            return
+        if returncode != 0:
+            message = f"ffmpeg exited with code {returncode} decoding {self._path}"
+            raise MediaProbeError(message)
+
     # --- Low-level frame reads ---
 
     def _stdout(self) -> io.BufferedReader | None:
@@ -307,6 +326,7 @@ class VideoReader:
             return False, None
         frame = self._grab(geometry)
         if frame is None:
+            self._reap_after_eof()
             return False, None
         self._last_index = index
         self._emitted += 1
@@ -373,6 +393,7 @@ class VideoReader:
         self._last_index = self._target
         frame = self._read_current(geometry)
         if frame is None:
+            self._reap_after_eof()
             return False, None
         self._target += self._frame_step
         return True, frame
