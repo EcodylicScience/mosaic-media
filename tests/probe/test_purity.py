@@ -166,6 +166,23 @@ def test_the_io_layer_imports_only_the_standard_library_numpy_and_av() -> None:
     assert offenders == {}, message
 
 
+def test_the_io_layer_spawns_no_ffmpeg_subprocess() -> None:
+    """No io module spawns an ffmpeg or ffprobe subprocess: the io layer
+    decodes and encodes in process through av. The sanctioned boundary is a
+    call into the probe layer's public API (multi.py calls probe_media), which
+    owns its ffprobe subprocess as the measurement authority; that is an
+    imported name, not a subprocess spawned here."""
+    modules = numpy_layer_files()
+    assert modules, "io layer modules not found"
+    offenders = [
+        str(module.relative_to(CORE_ROOT))
+        for module in modules
+        if "subprocess" in imported_roots(module.read_text())
+    ]
+    message = f"io modules must not spawn a subprocess, found: {offenders}"
+    assert offenders == [], message
+
+
 def test_the_core_never_imports_dynamically() -> None:
     modules = layered_files()
     assert modules, "layered modules not found"
