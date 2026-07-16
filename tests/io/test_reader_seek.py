@@ -74,3 +74,35 @@ def test_seek_out_of_range_raises(corpus_gop12: Path) -> None:
             reader.seek(facts.frame_count)
         with pytest.raises(IndexError):
             reader.seek(-1)
+
+
+def test_positioned_read_stops_at_end_frame(corpus_gop12: Path) -> None:
+    # A seek inside a windowed reader must still honor the window: reads step by
+    # frame_step and stop at end_frame, exactly like sequential exhaustion,
+    # rather than running to the end of the file.
+    goldens = decode_md5s(corpus_gop12)
+    expected_indices = [12, 15, 18, 21, 24, 27]
+    with VideoReader(
+        corpus_gop12, start_frame=10, end_frame=30, frame_step=3
+    ) as reader:
+        reader.seek(12)
+        produced: list[str] = []
+        while True:
+            ok, frame = reader.read()
+            if not ok:
+                break
+            assert frame is not None
+            produced.append(frame_md5(frame))
+    assert produced == [goldens[index] for index in expected_indices]
+
+
+def test_seek_outside_window_raises(corpus_gop12: Path) -> None:
+    with VideoReader(
+        corpus_gop12, start_frame=10, end_frame=30, frame_step=3
+    ) as reader:
+        with pytest.raises(IndexError):
+            reader.seek(9)  # below start_frame
+        with pytest.raises(IndexError):
+            reader.seek(30)  # at the exclusive end bound
+        with pytest.raises(IndexError):
+            reader.seek(31)  # above the end bound

@@ -1,3 +1,5 @@
+import gc
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,3 +31,23 @@ def test_full_read_of_untouched_clip_terminates_cleanly(tmp_path: Path) -> None:
     with VideoReader(clip, facts=facts) as reader:
         count = sum(1 for _pair in reader)
     assert count == facts.frame_count
+
+
+def test_del_after_failed_init_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # When __init__ raises before finishing, finalization must not add
+    # AttributeError noise from close() touching an unset attribute. Capture any
+    # exception ffmpeg-less construction leaks through the garbage collector.
+    monkeypatch.setattr("mosaic_media.io.reader.ffmpeg_available", lambda: False)
+    unraisable: list[object] = []
+    monkeypatch.setattr(
+        sys, "unraisablehook", lambda hook_args: unraisable.append(hook_args)
+    )
+    with pytest.raises(MediaProbeError):
+        _ = VideoReader("nonexistent.mp4")
+    _ = gc.collect()
+    assert not any(
+        isinstance(getattr(entry, "exc_value", None), AttributeError)
+        for entry in unraisable
+    )

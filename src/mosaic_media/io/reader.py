@@ -51,6 +51,18 @@ class _Geometry:
 
 
 class VideoReader:
+    """Decode frames from one video through a system-ffmpeg subprocess pipe.
+
+    Injecting `facts` suppresses the metadata probe that sequential reads would
+    otherwise run. Seeking and sparse reads (`seek` and `read_frames`)
+    additionally need the packet index, which `facts` does not carry; inject
+    `index` as well to suppress all probing.
+
+    The source frame count is resolved in this order: `facts.frame_count` when
+    facts are injected, then the header's declared frame count when that is
+    positive, then the length of the packet index.
+    """
+
     def __init__(
         self,
         path: Path | str,
@@ -64,6 +76,11 @@ class VideoReader:
         facts: MediaFacts | None = None,
         index: SeekIndex | None = None,
     ) -> None:
+        # Set first so __del__ -> close() -> _close_process() is safe even if
+        # __init__ raises below: close() reads _closed, and _close_process()
+        # reads _process, so both must exist before the ffmpeg guard can raise.
+        self._closed: bool = False
+        self._process: subprocess.Popen[bytes] | None = None
         if not ffmpeg_available():
             message = "ffmpeg not found on PATH; install ffmpeg to read frames"
             raise MediaProbeError(message)
@@ -80,13 +97,11 @@ class VideoReader:
         self._index: SeekIndex | None = index
         self._geometry: _Geometry | None = None
         self._scratch: numpy.ndarray | None = None
-        self._process: subprocess.Popen[bytes] | None = None
         self._mode: _ReaderMode = "idle"
         self._emitted: int = 0  # sequential: count of frames returned so far
         self._decoder_pos: int = 0  # positioned: next absolute source frame emitted
         self._target: int = 0  # positioned: next absolute frame read() returns
         self._last_index: int = 0  # index of the most recently returned frame
-        self._closed: bool = False
 
     # --- Metadata resolution ---
 
@@ -143,6 +158,14 @@ class VideoReader:
         )
         return self._geometry
 
+    def _window_end(self, geometry: _Geometry) -> int:
+        """The exclusive upper frame bound of the reader's window, clamped to
+        the source length. Sequential and positioned reads both stop here, and
+        seek() rejects a target at or beyond it."""
+        if self._end_frame is None:
+            return geometry.source_frame_count
+        return min(self._end_frame, geometry.source_frame_count)
+
     # --- Properties ---
 
     @property
@@ -160,11 +183,7 @@ class VideoReader:
     @property
     def frame_count(self) -> int:
         geometry = self._ensure_ready()
-        end = (
-            geometry.source_frame_count
-            if self._end_frame is None
-            else min(self._end_frame, geometry.source_frame_count)
-        )
+        end = self._window_end(geometry)
         start = min(self._start_frame, end)
         return len(range(start, end, self._frame_step))
 
@@ -316,11 +335,7 @@ class VideoReader:
         if self._mode == "idle":
             self._spawn(seek_timestamp=None, use_select=True)
             self._mode = "sequential"
-        end = (
-            geometry.source_frame_count
-            if self._end_frame is None
-            else min(self._end_frame, geometry.source_frame_count)
-        )
+        end = self._window_end(geometry)
         index = self._start_frame + self._emitted * self._frame_step
         if index >= end:
             return False, None
@@ -358,9 +373,10 @@ class VideoReader:
     def seek(self, frame_index: int) -> None:
         geometry = self._ensure_ready()
         target = int(frame_index)
-        if target < 0 or target >= geometry.source_frame_count:
+        window_end = self._window_end(geometry)
+        if target < self._start_frame or target >= window_end:
             message = (
-                f"frame index {target} out of range [0, {geometry.source_frame_count})"
+                f"frame index {target} out of range [{self._start_frame}, {window_end})"
             )
             raise IndexError(message)
         index = self._ensure_index()
@@ -388,7 +404,7 @@ class VideoReader:
     def _read_positioned(
         self, geometry: _Geometry
     ) -> tuple[bool, numpy.ndarray | None]:
-        if self._target >= geometry.source_frame_count:
+        if self._target >= self._window_end(geometry):
             return False, None
         self._last_index = self._target
         frame = self._read_current(geometry)
@@ -414,6 +430,12 @@ class VideoReader:
                     message = f"failed to decode frame {target} from {self._path}"
                     raise MediaProbeError(message)
                 self._last_index = target
+                # Leave the positioned cursor at the decoder's true next frame,
+                # set before the yield so it holds whether the caller consumes
+                # the whole generator or abandons it mid-iteration. A following
+                # read() then returns that frame with the correct index instead
+                # of mislabeling it as this sparse target.
+                self._target = self._decoder_pos
                 yield target, frame
 
     def __iter__(self) -> Iterator[tuple[int, numpy.ndarray]]:

@@ -39,3 +39,34 @@ def test_read_frames_within_one_gop(corpus_gop12: Path) -> None:
 def test_read_frames_empty(corpus_gop12: Path) -> None:
     with VideoReader(corpus_gop12) as reader:
         assert list(reader.read_frames([])) == []
+
+
+def test_read_after_read_frames_continues_correctly(corpus_gop12: Path) -> None:
+    # After draining a sparse read the positioned cursor must be consistent, so
+    # the next read returns the frame following the last sparse target with a
+    # matching reported index -- not the next source frame mislabeled. read_batch
+    # drives read() and reports the index it read alongside the frame.
+    goldens = decode_md5s(corpus_gop12)
+    with VideoReader(corpus_gop12) as reader:
+        sparse = list(reader.read_frames([10, 20]))
+        assert [index for index, _ in sparse] == [10, 20]
+        indices, frames = reader.read_batch(1)
+    assert indices.shape == (1,)
+    reported = int(indices[0])
+    assert reported == 21
+    assert frame_md5(frames[0]) == goldens[reported]
+
+
+def test_read_after_abandoned_read_frames_continues_correctly(
+    corpus_gop12: Path,
+) -> None:
+    goldens = decode_md5s(corpus_gop12)
+    with VideoReader(corpus_gop12) as reader:
+        for index, _frame in reader.read_frames([10, 20]):
+            assert index == 10
+            break  # abandon the generator after the first yield
+        indices, frames = reader.read_batch(1)
+    assert indices.shape == (1,)
+    reported = int(indices[0])
+    assert reported == 11
+    assert frame_md5(frames[0]) == goldens[reported]
