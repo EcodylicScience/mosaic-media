@@ -1,0 +1,93 @@
+"""Layered modules import without a forbidden dependency present.
+
+`_run_guarded` is the shared seam for every "import X with root Y poisoned"
+check in this package. It runs the import statements under test in a fresh
+interpreter whose sys.meta_path carries a finder that raises AssertionError on
+any import whose top-level name is the poisoned root. Subprocess isolation is
+essential: a module already imported into this test process would be served from
+sys.modules and never consult the finder, masking a violation. AssertionError --
+not ImportError -- so a `try/except ImportError` optional-import guard inside a
+module under test cannot swallow the violation. The core is kept dependency-free
+on purpose: the transcode CLI must start on a machine that has ffmpeg and nothing
+else.
+
+Two later additions append guard tests to this file: the frame reader is checked
+to import without numpy through the core path (io-without-numpy), and the command
+line app to load without typer where it should not need it (cli-without-typer).
+Both call `_run_guarded`; the helper is the single home for the poison-finder
+idiom, and those appends are expected.
+"""
+
+import subprocess
+import sys
+
+_POISON_FINDER = """
+import sys
+from importlib.abc import MetaPathFinder
+
+
+class Poison(MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname.split(".")[0] == FORBIDDEN_ROOT:
+            raise AssertionError(
+                "a module under test imported the forbidden dependency: " + fullname
+            )
+        return None
+
+
+sys.meta_path.insert(0, Poison())
+"""
+
+_CORE_IMPORTS = """
+import mosaic_media
+import mosaic_media.hwaccel
+import mosaic_media.probe
+import mosaic_media.probe.boxes
+import mosaic_media.probe.candidates
+import mosaic_media.probe.errors
+import mosaic_media.probe.facts
+import mosaic_media.probe.ffprobe
+import mosaic_media.probe.gop
+import mosaic_media.probe.policy
+import mosaic_media.probe.probe
+import mosaic_media.probe.sequence
+import mosaic_media.probe.timing
+import mosaic_media.probe.verdict
+import mosaic_media.thumbnail
+import mosaic_media.thumbnail.downscale
+import mosaic_media.thumbnail.extract
+"""
+
+
+def _run_guarded(body: str, *, forbidden_root: str) -> subprocess.CompletedProcess[str]:
+    """Import `body` in a fresh interpreter with `forbidden_root` poisoned.
+
+    A meta-path finder raising AssertionError on the poisoned root is installed
+    before `body` runs, so any import of that root -- direct or transitive --
+    aborts the child with a non-zero exit. Runs in a subprocess on purpose: a
+    module already resident in this test process's sys.modules would never
+    consult the finder, masking a violation. Returns the completed process so
+    the caller can assert on returncode and stderr.
+    """
+    program = "FORBIDDEN_ROOT = " + repr(forbidden_root) + "\n" + _POISON_FINDER + body
+    return subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def test_the_core_imports_without_numpy() -> None:
+    result = _run_guarded(_CORE_IMPORTS, forbidden_root="numpy")
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_core_imports_without_typer() -> None:
+    result = _run_guarded(_CORE_IMPORTS, forbidden_root="typer")
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_core_imports_without_cv2() -> None:
+    result = _run_guarded(_CORE_IMPORTS, forbidden_root="cv2")
+    assert result.returncode == 0, result.stderr
