@@ -36,7 +36,7 @@ class _FakeClock:
 
 def test_median_and_interleave_separate_sides_correctly() -> None:
     clock = _FakeClock()
-    # Asymmetric costs: the cv2 median is 3.0 while the mean is 21.2, so a
+    # Asymmetric costs: the cv2 median is 3.0 while the mean is 22.1, so a
     # mean substituted for the median fails loudly, and dropping any round
     # (a stray warmup) shifts the median off 3.0. Distinct reader costs make
     # a positional side assignment produce different lists than the
