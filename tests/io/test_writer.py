@@ -76,6 +76,17 @@ def test_write_rejects_wrong_dtype(tmp_path: Path) -> None:
         assert writer.frames_written == 0
 
 
+def test_hardware_encode_falls_back_when_device_unusable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With permission granted but the device unusable, the writer must fall back
+    # to libx264 rather than select an NVENC encoder that fails at startup.
+    monkeypatch.setattr("mosaic_media.io.writer._nvenc_encoder_usable", lambda: False)
+    output = tmp_path / "fallback.mp4"
+    with FFmpegVideoWriter(output, 320, 240, fps=30.0, hwaccel=True) as writer:
+        assert writer.encoder_name == "libx264"
+
+
 def test_writer_surfaces_ffmpeg_startup_failure(tmp_path: Path) -> None:
     # An output extension ffmpeg cannot map to a muxer makes ffmpeg exit at
     # startup ("Unable to find a suitable output format"), before it reads a

@@ -1,18 +1,48 @@
-"""BGR-frame video writer through a system-ffmpeg subprocess pipe. Requires numpy.
+"""BGR-frame video writer through in-process libav bindings (PyAV). Requires numpy and av.
 
-Raw bgr24 frames are piped to ffmpeg's stdin and encoded with libx264, or with
-h264_nvenc when hwaccel is requested and the encoder is available. Absorbed from
-mosaic's video_io: it was already pure ffmpeg, so only the capability probing
-and error type change to match this package.
+Raw bgr24 frames are fed to av's libx264 encoder, or to h264_nvenc when the
+caller permits hardware AND a cached usability probe confirms the device
+actually encodes -- listing an encoder is not proof it runs. Output stays
+mp4/h264/yuv420p. Shape and dtype are validated per write; an open failure, an
+unwritable format, or an encode error surfaces as MediaProbeError rather than a
+silently incremented frame count.
 """
 
-import subprocess
+from fractions import Fraction
 from pathlib import Path
 
+import av
+import av.error
 import numpy
+from av.codec import CodecContext
+from av.container import OutputContainer
+from av.video.codeccontext import VideoCodecContext
+from av.video.frame import VideoFrame
+from av.video.stream import VideoStream
 
-from ..hwaccel import encoder_available, ffmpeg_available
 from ..probe.errors import MediaProbeError
+
+_nvenc_usable_cache: bool | None = None
+
+
+def _nvenc_encoder_usable() -> bool:
+    """Whether h264_nvenc actually opens on this machine. Cached: the probe
+    constructs and opens a tiny encoder context once; a GPU-less machine raises
+    even though the wheel lists the encoder."""
+    global _nvenc_usable_cache
+    if _nvenc_usable_cache is None:
+        try:
+            context = CodecContext.create("h264_nvenc", "w")
+            if isinstance(context, VideoCodecContext):
+                context.width = 16
+                context.height = 16
+                context.pix_fmt = "yuv420p"
+            context.time_base = Fraction(1, 30)
+            context.open()
+            _nvenc_usable_cache = True
+        except av.error.FFmpegError:
+            _nvenc_usable_cache = False
+    return _nvenc_usable_cache
 
 
 class FFmpegVideoWriter:
@@ -26,44 +56,43 @@ class FFmpegVideoWriter:
         preset: str = "medium",
         hwaccel: bool = False,
     ) -> None:
-        if not ffmpeg_available():
-            message = "ffmpeg not found on PATH; install ffmpeg to write frames"
-            raise MediaProbeError(message)
+        # Set first so __del__ -> close() is safe even if a later line raises:
+        # close() reads _closed and _container, so both must exist before the
+        # path resolution and container open below can raise.
+        self._closed: bool = False
+        self._container: OutputContainer | None = None
         self._output_path: Path = Path(output_path).expanduser().resolve()
         self._output_path.parent.mkdir(parents=True, exist_ok=True)
         self._width: int = width
         self._height: int = height
         self._fps: float = fps
         self._frames_written: int = 0
-        self._closed: bool = False
-
-        use_nvenc = hwaccel and encoder_available("h264_nvenc")
-        command = [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "bgr24",
-            "-s",
-            f"{width}x{height}",
-            "-r",
-            str(fps),
-            "-i",
-            "pipe:0",
-        ]
-        if use_nvenc:
-            command += ["-c:v", "h264_nvenc", "-preset", preset, "-cq", str(crf)]
-        else:
-            command += ["-c:v", "libx264", "-preset", preset, "-crf", str(crf)]
-        command += ["-pix_fmt", "yuv420p", str(self._output_path)]
-
-        self._process: subprocess.Popen[bytes] | None = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        self._encoder_name: str = (
+            "h264_nvenc" if (hwaccel and _nvenc_encoder_usable()) else "libx264"
         )
+        try:
+            container = av.open(str(self._output_path), mode="w")
+        except (ValueError, av.error.FFmpegError) as exc:
+            # av reports an unmappable output format as a builtin ValueError before
+            # libav is engaged; runtime failures come through FFmpegError.
+            message = f"failed to open {self._output_path} for writing: {exc}"
+            raise MediaProbeError(message) from exc
+        stream = container.add_stream(
+            self._encoder_name, rate=Fraction(fps).limit_denominator(1000000)
+        )
+        if not isinstance(stream, VideoStream):
+            container.close()
+            message = f"expected a video stream for encoder {self._encoder_name}"
+            raise MediaProbeError(message)
+        stream.width = width
+        stream.height = height
+        stream.pix_fmt = "yuv420p"
+        if self._encoder_name == "libx264":
+            stream.options = {"preset": preset, "crf": str(crf)}
+        else:
+            stream.options = {"preset": preset, "cq": str(crf)}
+        self._container = container
+        self._stream: VideoStream = stream
 
     @property
     def output_path(self) -> Path:
@@ -85,29 +114,31 @@ class FFmpegVideoWriter:
     def frames_written(self) -> int:
         return self._frames_written
 
+    @property
+    def encoder_name(self) -> str:
+        return self._encoder_name
+
     def write(self, frame: numpy.ndarray) -> None:
         if self._closed:
             message = "writer is closed"
             raise MediaProbeError(message)
-        process = self._process
-        if process is None or process.stdin is None:
-            message = "ffmpeg process is not running"
+        container = self._container
+        if container is None:
+            message = "writer is closed"
             raise MediaProbeError(message)
         expected_shape = (self._height, self._width, 3)
         if frame.shape != expected_shape or frame.dtype != numpy.uint8:
-            message = f"frame shape {tuple(frame.shape)} dtype {frame.dtype} does not match writer geometry {expected_shape} dtype uint8"
+            message = (
+                f"frame shape {tuple(frame.shape)} dtype {frame.dtype} does not "
+                f"match writer geometry {expected_shape} dtype uint8"
+            )
             raise MediaProbeError(message)
+        video_frame = VideoFrame.from_ndarray(frame, format="bgr24")
         try:
-            _ = process.stdin.write(frame.tobytes())
-        except BrokenPipeError as exc:
-            # ffmpeg died and closed the read end of the pipe. Reap it for the
-            # real exit code so the message says why rather than losing the
-            # frame silently.
-            try:
-                returncode = process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                returncode = None
-            message = f"ffmpeg closed its input pipe while writing {self._output_path} (exit code {returncode})"
+            for packet in self._stream.encode(video_frame):
+                container.mux(packet)
+        except av.error.FFmpegError as exc:
+            message = f"failed to encode a frame to {self._output_path}: {exc}"
             raise MediaProbeError(message) from exc
         self._frames_written += 1
 
@@ -115,30 +146,17 @@ class FFmpegVideoWriter:
         if self._closed:
             return
         self._closed = True
-        process = self._process
-        self._process = None
-        if process is None:
+        container = self._container
+        self._container = None
+        if container is None:
             return
-        if process.stdin is not None:
-            try:
-                process.stdin.close()
-            except BrokenPipeError:
-                # A dead ffmpeg leaves buffered stdin bytes with nowhere to go;
-                # the nonzero exit below is the real diagnosis, not this flush.
-                pass
         try:
-            returncode = process.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            try:
-                returncode = process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                return
-        if returncode != 0:
-            message = (
-                f"ffmpeg exited with code {returncode} writing {self._output_path}"
-            )
-            raise MediaProbeError(message)
+            for packet in self._stream.encode(None):
+                container.mux(packet)
+            container.close()
+        except av.error.FFmpegError as exc:
+            message = f"failed to finalize {self._output_path}: {exc}"
+            raise MediaProbeError(message) from exc
 
     def __enter__(self) -> "FFmpegVideoWriter":
         return self
