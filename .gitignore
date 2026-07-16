@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+.ruff_cache/
+.adversarial-council/
+
+# Virtual environments
+.venv
+
+# Agentic coding and related docs
+CLAUDE.md
+.claude/
+
+# Implemented specs and plans, kept locally for reference
+*.implemented.md
+*.superseded.md
+*.closed.md
