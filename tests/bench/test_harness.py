@@ -36,9 +36,13 @@ class _FakeClock:
 
 def test_median_and_interleave_separate_sides_correctly() -> None:
     clock = _FakeClock()
-    # Unsorted costs so this exercises the median, not the mean or an endpoint.
-    cv2_costs = deque([3.0, 1.0, 5.0, 2.0, 4.0])  # median 3.0
-    reader_costs = deque([1.0, 1.0, 1.0, 1.0, 1.0])  # median 1.0
+    # Asymmetric costs: the cv2 median is 3.0 while the mean is 21.2, so a
+    # mean substituted for the median fails loudly, and dropping any round
+    # (a stray warmup) shifts the median off 3.0. Distinct reader costs make
+    # a positional side assignment produce different lists than the
+    # identity-based one, which the exact list assertions below pin.
+    cv2_costs = deque([3.0, 1.0, 100.0, 4.0, 2.5])  # median 3.0, mean 22.1
+    reader_costs = deque([0.5, 1.5, 1.0, 2.5, 0.25])  # median 1.0
 
     def cv2_callable(_context: object) -> str:
         clock.advance(cv2_costs.popleft())
@@ -56,6 +60,8 @@ def test_median_and_interleave_separate_sides_correctly() -> None:
     )
     result = run_workload(workload, rounds=5, timer=clock.now)
 
+    assert result.cv2_times == [3.0, 1.0, 100.0, 4.0, 2.5]
+    assert result.reader_times == [0.5, 1.5, 1.0, 2.5, 0.25]
     assert result.cv2_median == 3.0
     assert result.reader_median == 1.0
     assert result.ratio == 3.0

@@ -41,10 +41,10 @@ __all__ = [
 def make_reader(path: Path, facts: MediaFacts, *, frame_step: int = 1) -> VideoReader:
     """Construct a VideoReader with injected probe facts.
 
-    Injection keyword: this passes facts=facts. Confirm the exact parameter
-    name against the frame-reader-io plan's Interfaces block at implementation
-    time; this is the single line to change if it differs, because every
-    benchmark opens readers through this helper.
+    Every benchmark opens readers through this one helper, so the injection
+    seam lives on a single line: the facts measured once by the corpus fixture
+    are passed as `facts=`, which suppresses the reader's own metadata probe
+    and keeps probing cost out of every timed region.
     """
     from mosaic_media.io import VideoReader
 
