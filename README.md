@@ -99,15 +99,19 @@ Three layers, each a heavier dependency set than the last:
 | Extra | Adds | Contents |
 | --- | --- | --- |
 | `mosaic-media` | standard library only | Probe, verdict, ffmpeg command construction. |
-| `mosaic-media[io]` | `numpy` | ffmpeg-pipe frame reader, seek index, multi-video reader. **No OpenCV.** |
+| `mosaic-media[io]` | `numpy`, `av` | In-process libav (PyAV) frame reader, seek index, multi-video reader. **No OpenCV.** |
 | `mosaic-media[cli]` | `typer` | The `mosaic-media` command line app. |
 
 `mosaic_api` imports the core and must not pull in `typer` or `numpy` through
 it. Only `mosaic_media.cli` may import `typer`.
 
-The reader and the CLI require a system `ffmpeg` on `PATH`: version 5.1 or newer
-for the runtime path (`-fps_mode`), and 6.0 or newer to run the test suite
-(`-display_rotation`).
+The reader decodes in process through libav (the `av` package) and needs no
+ffmpeg binary at runtime; its codec table is verified by the codec guard, with
+`av --no-binary av` (building against the system libav) as the fallback for a
+locked-down environment. The probe, the transcode command construction, and the
+CLI require a system `ffmpeg` on `PATH`: version 5.1 or newer for the runtime
+path (`-fps_mode`), and 6.0 or newer to run the test suite
+(`-display_rotation`), which the test corpus generation also depends on.
 
 ### The standard-library-only invariant needs a new reason
 
@@ -140,14 +144,15 @@ It is also an upgrade rather than a risk: the reader being replaced seeks with
 OpenCV's `CAP_PROP_POS_FRAMES`, which is a well-known source of off-by-N frame
 errors.
 
-The reader's subprocess architecture -- one persistent ffmpeg process for
-sequential reads, respawned with an input `-ss` for a discontinuous seek -- is
-adopted from established practice: moviepy's `FFMPEG_VideoReader` (MIT) and
-imageio-ffmpeg (BSD-2) both read frames this way. It improves on both by seeking
-against the exact packet index rather than by timestamp guesswork: the preceding
-keyframe of a target frame is known, so a seek respawns at that keyframe and
-discards a known number of frames, landing frame-exact. That is the structural
-fix for OpenCV's off-by-N seeking.
+The reader decodes in process through libav (the `av` package) rather than
+through a subprocess pipe of the kind moviepy's `FFMPEG_VideoReader` (MIT) and
+imageio-ffmpeg (BSD-2) both use -- see the spec's "In-process decode supersedes
+the subprocess pipe for io" for the gate evidence behind that choice. It
+improves on OpenCV's seeking by using the exact packet index rather than
+timestamp guesswork: a seek moves the container to the target frame's
+presentation timestamp with backward keyframe resolution, then decodes forward
+comparing frame timestamps against the index, landing frame-exact. That is the
+structural fix for OpenCV's off-by-N seeking.
 
 
 ## The OpenCV decode problem
@@ -386,9 +391,9 @@ friction on that surface would be paid on every field.
 
 ### 2. Frame reader and seek index
 
-Build the ffmpeg-pipe reader behind the `[io]` extra: decode to raw frames,
-seek via the packet index that `scan_packets` already produces, multi-video
-reading. numpy only, no OpenCV.
+Build the in-process libav reader behind the `[io]` extra: decode to raw
+frames, seek via the packet index that `scan_packets` already produces,
+multi-video reading. numpy and av, no OpenCV.
 
 ### 3. Toolkit adoption
 
