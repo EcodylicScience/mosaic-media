@@ -91,3 +91,21 @@ def test_the_core_imports_without_typer() -> None:
 def test_the_core_imports_without_cv2() -> None:
     result = _run_guarded(_CORE_IMPORTS, forbidden_root="cv2")
     assert result.returncode == 0, result.stderr
+
+
+def test_core_facade_imports_without_numpy() -> None:
+    result = _run_guarded("import mosaic_media\n", forbidden_root="numpy")
+    assert result.returncode == 0, result.stderr
+
+
+def test_io_subpackage_requires_numpy() -> None:
+    result = _run_guarded(
+        "import mosaic_media.io\nraise SystemExit('io imported without numpy')\n",
+        forbidden_root="numpy",
+    )
+    # Importing mosaic_media.io must fail because numpy is poisoned; the
+    # SystemExit sentinel must never be reached. The failure traceback names the
+    # forbidden `import numpy` from the io layer.
+    assert result.returncode != 0
+    assert "io imported without numpy" not in (result.stdout + result.stderr)
+    assert "numpy" in (result.stdout + result.stderr).lower()
