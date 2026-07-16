@@ -371,6 +371,9 @@ class VideoReader:
         return numpy.asarray(indices, dtype=numpy.int64), numpy.stack(frames)
 
     def seek(self, frame_index: int) -> None:
+        if self._closed:
+            message = "reader is closed"
+            raise MediaProbeError(message)
         geometry = self._ensure_ready()
         target = int(frame_index)
         window_end = self._window_end(geometry)
@@ -417,6 +420,9 @@ class VideoReader:
     def read_frames(
         self, indices: Sequence[int]
     ) -> Iterator[tuple[int, numpy.ndarray]]:
+        if self._closed:
+            message = "reader is closed"
+            raise MediaProbeError(message)
         geometry = self._ensure_ready()
         targets = sorted({int(index) for index in indices})
         if not targets:

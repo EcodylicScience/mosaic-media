@@ -33,6 +33,23 @@ def test_full_read_of_untouched_clip_terminates_cleanly(tmp_path: Path) -> None:
     assert count == facts.frame_count
 
 
+def test_seek_after_close_raises(corpus_gop12: Path) -> None:
+    # A seek on a closed reader must raise before spawning anything, so a
+    # discarded reader cannot leave an orphaned ffmpeg child behind. The
+    # raise-before-spawn ordering makes the no-orphan property structural.
+    reader = VideoReader(corpus_gop12)
+    reader.close()
+    with pytest.raises(MediaProbeError):
+        reader.seek(5)
+
+
+def test_read_frames_after_close_raises(corpus_gop12: Path) -> None:
+    reader = VideoReader(corpus_gop12)
+    reader.close()
+    with pytest.raises(MediaProbeError):
+        _ = list(reader.read_frames([5, 6]))
+
+
 def test_del_after_failed_init_does_not_raise(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

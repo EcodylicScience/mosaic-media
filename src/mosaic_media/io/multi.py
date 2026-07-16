@@ -13,11 +13,26 @@ from pathlib import Path
 
 import numpy
 
+from mosaic_media.probe.errors import MediaProbeError
 from mosaic_media.probe.facts import MediaFacts
+from mosaic_media.probe.ffprobe import read_header, scan_packets
 from mosaic_media.probe.probe import probe_media
-from mosaic_media.probe.sequence import uniform_properties
+from mosaic_media.probe.sequence import MeasuredVideoProperties, uniform_properties
 
+from .index import SeekIndex, build_seek_index
 from .reader import VideoReader
+
+
+def _displayed_dimensions(facts: MediaFacts) -> tuple[int, int]:
+    """The (width, height) a VideoReader emits for `facts`. ffmpeg autorotates,
+    so a quarter-turn source is displayed with its coded width and height
+    swapped. The sequence must record and compare that displayed orientation,
+    not the coded one: an upright clip and a quarter-turned clip of equal coded
+    size are uniform on the coded numbers yet emit transposed frames, so the
+    coded comparison would admit a sequence the reader cannot stitch."""
+    if facts.rotation_degrees % 180 == 90:
+        return facts.height, facts.width
+    return facts.width, facts.height
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,25 +60,38 @@ class MultiVideoReader:
         self._segments: list[VideoSegment] = []
         self._segment_starts: list[int] = []
         self._facts: list[MediaFacts] = []
+        self._indices: list[SeekIndex | None] = []
+        properties: list[MeasuredVideoProperties] = []
         cumulative = 0
         for path in paths:
             resolved = path.expanduser().resolve()
             facts = probe_media(resolved)
             self._facts.append(facts)
+            self._indices.append(None)
+            display_width, display_height = _displayed_dimensions(facts)
             self._segments.append(
                 VideoSegment(
                     path=resolved,
                     frame_count=facts.frame_count,
                     fps=facts.fps,
-                    width=facts.width,
-                    height=facts.height,
+                    width=display_width,
+                    height=display_height,
                     start_frame=cumulative,
+                )
+            )
+            properties.append(
+                MeasuredVideoProperties(
+                    fps=facts.fps,
+                    width=display_width,
+                    height=display_height,
+                    frame_count=facts.frame_count,
+                    duration=facts.duration,
                 )
             )
             self._segment_starts.append(cumulative)
             cumulative += facts.frame_count
 
-        mismatch = uniform_properties(self._facts)
+        mismatch = uniform_properties(properties)
         if mismatch is not None:
             message = (
                 f"property mismatch across sequence: {mismatch.field} "
@@ -118,18 +146,36 @@ class MultiVideoReader:
 
     # --- Open / seek / read ---
 
+    def _segment_index(self, segment_index: int) -> SeekIndex:
+        """The segment's packet index, built on first open and cached. Reopening
+        a segment on a later seek or boundary crossing reuses the cached index
+        instead of rescanning the file."""
+        cached = self._indices[segment_index]
+        if cached is not None:
+            return cached
+        path = self._segments[segment_index].path
+        header = read_header(path)
+        packets, _source = scan_packets(path, header.video_position)
+        built = build_seek_index(packets)
+        self._indices[segment_index] = built
+        return built
+
     def _open_segment(self, segment_index: int, local_seek: int) -> None:
         if self._reader is not None:
             self._reader.close()
         self._reader = VideoReader(
             self._segments[segment_index].path,
             facts=self._facts[segment_index],
+            index=self._segment_index(segment_index),
         )
         self._current_segment = segment_index
         if local_seek:
             self._reader.seek(local_seek)
 
     def seek(self, global_frame: int) -> None:
+        if self._closed:
+            message = "reader is closed"
+            raise MediaProbeError(message)
         segment_index, local_frame = self.segment_for_frame(global_frame)
         self._open_segment(segment_index, local_frame)
         self._global_frame = global_frame

@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 
 from mosaic_media.io.multi import MultiVideoReader
+from mosaic_media.probe.errors import MediaProbeError
+from mosaic_media.probe.ffprobe import Packet, TimestampSource
 from tests.helpers.corpus import decode_md5s, frame_md5, generate_video
 
 
@@ -85,3 +87,74 @@ def test_resolution_mismatch_raises(
 def test_empty_path_list_rejected() -> None:
     with pytest.raises(ValueError):
         _ = MultiVideoReader([])
+
+
+def test_rotated_sequence_reports_displayed_dimensions(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    root = tmp_path_factory.mktemp("rot_uniform")
+    first = generate_video(
+        root / "a.mp4", frames=12, fps=30.0, gop=12, rotation_degrees=90
+    )
+    second = generate_video(
+        root / "b.mp4", frames=12, fps=30.0, gop=12, rotation_degrees=90
+    )
+    with MultiVideoReader([first, second]) as reader:
+        # Coded size is 320x240; a quarter turn is displayed as 240x320.
+        assert reader.width == 240
+        assert reader.height == 320
+        ok, frame = reader.read()
+        assert ok
+        assert frame is not None
+        # The emitted frame carries the displayed orientation the reader reports.
+        assert frame.shape == (reader.height, reader.width, 3)
+
+
+def test_mixed_rotation_with_equal_coded_dimensions_raises(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    root = tmp_path_factory.mktemp("rot_mixed")
+    upright = generate_video(root / "up.mp4", frames=10, fps=30.0, gop=12)
+    rotated = generate_video(
+        root / "rot.mp4", frames=10, fps=30.0, gop=12, rotation_degrees=90
+    )
+    # Equal coded dimensions but opposite displayed orientation. The uniformity
+    # check compares displayed width and height, so this sequence is rejected.
+    with pytest.raises(ValueError):
+        _ = MultiVideoReader([upright, rotated])
+
+
+def test_seek_after_close_raises(two_clips: tuple[Path, Path]) -> None:
+    first, second = two_clips
+    reader = MultiVideoReader([first, second])
+    reader.close()
+    with pytest.raises(MediaProbeError):
+        reader.seek(5)
+
+
+def test_segment_packet_index_is_scanned_once(
+    two_clips: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Two seeks into the same segment must scan that segment's packets once: the
+    # index is built on first open and cached, then injected on every reopen.
+    from mosaic_media.probe.ffprobe import scan_packets as real_scan
+
+    calls = 0
+
+    def counting_scan(
+        path: Path, video_position: int
+    ) -> tuple[tuple[Packet, ...], TimestampSource]:
+        nonlocal calls
+        calls += 1
+        return real_scan(path, video_position)
+
+    monkeypatch.setattr("mosaic_media.io.multi.scan_packets", counting_scan)
+    first, second = two_clips
+    with MultiVideoReader([first, second]) as reader:
+        reader.seek(3)
+        ok, _frame = reader.read()
+        assert ok
+        reader.seek(9)
+        ok, _frame = reader.read()
+        assert ok
+    assert calls == 1
