@@ -1,0 +1,114 @@
+from pathlib import Path
+
+import pytest
+
+from mosaic_media.probe.errors import MediaProbeError
+from mosaic_media.probe.ffprobe import read_header, scan_packets
+
+
+def test_header_reads_container_codec_and_measured_geometry(
+    clips: dict[str, Path],
+) -> None:
+    header = read_header(clips["cfr_mp4"])
+    assert header.container == "mov,mp4,m4a,3gp,3g2,mj2"
+    assert header.codec_name == "h264"
+    assert (header.width, header.height) == (320, 240)
+    assert header.rotation_degrees == 0
+    assert header.square_pixels
+    assert header.progressive
+    assert not header.has_audio
+    assert header.video_stream_count == 1
+
+
+def test_header_reads_rotation_from_side_data_not_from_a_stream_tag(
+    clips: dict[str, Path],
+) -> None:
+    # ffmpeg moved rotation into display-matrix side data; a `rotate` stream tag
+    # does not exist on any current ffmpeg. This is the check loopy gets wrong.
+    header = read_header(clips["rotated_mp4"])
+    assert header.rotation_degrees == 90
+    assert (header.width, header.height) == (320, 240)
+
+
+def test_header_detects_non_square_pixels(clips: dict[str, Path]) -> None:
+    assert not read_header(clips["anamorphic_mp4"]).square_pixels
+
+
+def test_header_detects_audio(clips: dict[str, Path]) -> None:
+    assert read_header(clips["audio_mp4"]).has_audio
+
+
+def test_declared_fps_comes_from_avg_frame_rate(clips: dict[str, Path]) -> None:
+    assert read_header(clips["cfr_mp4"]).declared_fps == pytest.approx(25.0)
+
+
+def test_a_file_with_no_video_stream_raises(clips: dict[str, Path]) -> None:
+    with pytest.raises(MediaProbeError, match="no video stream"):
+        _ = read_header(clips["no_video"])
+
+
+def test_a_missing_file_raises(tmp_path: Path) -> None:
+    with pytest.raises(MediaProbeError):
+        _ = read_header(tmp_path / "absent.mp4")
+
+
+def test_scan_packets_returns_times_sizes_and_keyframe_flags(
+    clips: dict[str, Path],
+) -> None:
+    packets, source = scan_packets(clips["cfr_mp4"], video_position=0)
+    assert source == "pts"
+    assert len(packets) == 50
+    assert sum(1 for packet in packets if packet.keyframe) >= 1
+    assert all(packet.size > 0 for packet in packets)
+
+
+def test_scan_packets_falls_back_to_dts_when_pts_is_absent(
+    clips: dict[str, Path],
+) -> None:
+    # An AVI remuxed from mp4 reports `pts_time=N/A` on every packet. Without the
+    # fallback, unmeasurable is silently read as variable, condemning a
+    # constant-rate file to a lossless re-encode it does not need.
+    packets, source = scan_packets(clips["no_pts_avi"], video_position=0)
+    assert source == "dts"
+    assert len(packets) == 50
+    times = [packet.time for packet in packets]
+    assert times == sorted(times)
+    assert times[1] - times[0] == pytest.approx(0.04)
+
+
+def test_scan_packets_prefers_pts_when_both_are_present(
+    clips: dict[str, Path],
+) -> None:
+    # An AVI encoded straight from a filter source keeps its PTS, so it cannot
+    # exercise the fallback. Pinning that here stops the fallback test from being
+    # rewritten against a file that never takes the branch it names.
+    _packets, source = scan_packets(clips["mjpeg_avi"], video_position=0)
+    assert source == "pts"
+
+
+def test_packet_csv_column_order_is_pts_dts_size_flags(clips: dict[str, Path]) -> None:
+    # ffprobe emits -show_entries fields in its own natural order, not the order
+    # requested. If a future ffmpeg reorders them the parser silently mis-reads
+    # size as flags. This test is the canary.
+    import subprocess
+
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "packet=pts_time,dts_time,size,flags",
+        "-of",
+        "csv=p=0",
+        str(clips["cfr_mp4"]),
+    ]
+    first = subprocess.run(
+        command, capture_output=True, text=True, timeout=60
+    ).stdout.splitlines()[0]
+    columns = first.split(",")
+    assert len(columns) == 4
+    assert float(columns[0]) >= 0.0
+    assert columns[2].isdigit()
+    assert "K" in columns[3] or "_" in columns[3]
