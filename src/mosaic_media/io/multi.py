@@ -1,0 +1,179 @@
+"""Read N ordered video files as one global frame space. Requires numpy.
+
+Segment 0 owns global frames [0, N0), segment 1 owns [N0, N0 + N1), and so on.
+Each file is probed once; its MediaFacts are injected into a per-segment
+VideoReader so no file is re-measured on read. Uniformity across the sequence is
+validated with the probe's uniform_properties, the same check the arrangement
+layer uses, so a resolution or frame-rate mismatch is rejected at construction.
+"""
+
+import bisect
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy
+
+from mosaic_media.probe.facts import MediaFacts
+from mosaic_media.probe.probe import probe_media
+from mosaic_media.probe.sequence import uniform_properties
+
+from .reader import VideoReader
+
+
+@dataclass(frozen=True, slots=True)
+class VideoSegment:
+    path: Path
+    frame_count: int
+    fps: float
+    width: int
+    height: int
+    start_frame: int
+
+
+class MultiVideoReader:
+    def __init__(self, video_paths: list[Path] | Path | str) -> None:
+        self._closed: bool = False
+        self._reader: VideoReader | None = None
+        if isinstance(video_paths, (str, Path)):
+            paths = [Path(video_paths)]
+        else:
+            paths = [Path(entry) for entry in video_paths]
+        if not paths:
+            message = "at least one video path is required"
+            raise ValueError(message)
+
+        self._segments: list[VideoSegment] = []
+        self._segment_starts: list[int] = []
+        self._facts: list[MediaFacts] = []
+        cumulative = 0
+        for path in paths:
+            resolved = path.expanduser().resolve()
+            facts = probe_media(resolved)
+            self._facts.append(facts)
+            self._segments.append(
+                VideoSegment(
+                    path=resolved,
+                    frame_count=facts.frame_count,
+                    fps=facts.fps,
+                    width=facts.width,
+                    height=facts.height,
+                    start_frame=cumulative,
+                )
+            )
+            self._segment_starts.append(cumulative)
+            cumulative += facts.frame_count
+
+        mismatch = uniform_properties(self._facts)
+        if mismatch is not None:
+            message = (
+                f"property mismatch across sequence: {mismatch.field} "
+                f"{mismatch.first} vs {mismatch.other}"
+            )
+            raise ValueError(message)
+
+        self._total_frames: int = cumulative
+        self._current_segment: int = 0
+        self._global_frame: int = 0
+
+    # --- Properties ---
+
+    @property
+    def total_frames(self) -> int:
+        return self._total_frames
+
+    @property
+    def fps(self) -> float:
+        return self._segments[0].fps
+
+    @property
+    def width(self) -> int:
+        return self._segments[0].width
+
+    @property
+    def height(self) -> int:
+        return self._segments[0].height
+
+    @property
+    def video_count(self) -> int:
+        return len(self._segments)
+
+    @property
+    def segments(self) -> list[VideoSegment]:
+        return list(self._segments)
+
+    @property
+    def frame_position(self) -> int:
+        return self._global_frame
+
+    # --- Frame-to-segment mapping ---
+
+    def segment_for_frame(self, global_frame: int) -> tuple[int, int]:
+        if global_frame < 0 or global_frame >= self._total_frames:
+            message = (
+                f"global frame {global_frame} out of range [0, {self._total_frames})"
+            )
+            raise IndexError(message)
+        index = bisect.bisect_right(self._segment_starts, global_frame) - 1
+        return index, global_frame - self._segment_starts[index]
+
+    # --- Open / seek / read ---
+
+    def _open_segment(self, segment_index: int, local_seek: int) -> None:
+        if self._reader is not None:
+            self._reader.close()
+        self._reader = VideoReader(
+            self._segments[segment_index].path,
+            facts=self._facts[segment_index],
+        )
+        self._current_segment = segment_index
+        if local_seek:
+            self._reader.seek(local_seek)
+
+    def seek(self, global_frame: int) -> None:
+        segment_index, local_frame = self.segment_for_frame(global_frame)
+        self._open_segment(segment_index, local_frame)
+        self._global_frame = global_frame
+
+    def read(self) -> tuple[bool, numpy.ndarray | None]:
+        if self._closed or self._global_frame >= self._total_frames:
+            return False, None
+        if self._reader is None:
+            self._open_segment(self._current_segment, 0)
+        reader = self._reader
+        if reader is None:
+            return False, None
+        ok, frame = reader.read()
+        if not ok:
+            next_index = self._current_segment + 1
+            if next_index >= len(self._segments):
+                return False, None
+            self._open_segment(next_index, 0)
+            reader = self._reader
+            if reader is None:
+                return False, None
+            ok, frame = reader.read()
+            if not ok:
+                return False, None
+        self._global_frame += 1
+        return True, frame
+
+    # --- Cleanup ---
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            if self._reader is not None:
+                self._reader.close()
+                self._reader = None
+
+    def __enter__(self) -> "MultiVideoReader":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def __len__(self) -> int:
+        return self._total_frames
