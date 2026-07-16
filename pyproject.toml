@@ -1,0 +1,41 @@
+[build-system]
+requires = ["uv_build>=0.10.0,<0.12.0"]
+build-backend = "uv_build"
+
+[project]
+name = "mosaic-media"
+version = "0.1.0"
+description = "Media probing, transcode planning, and frame reading through system ffmpeg."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+io = ["numpy>=1.22"]
+cli = ["typer>=0.12"]
+
+[dependency-groups]
+dev = ["basedpyright>=1.38.2", "ruff>=0.15.4", "pytest>=8.0", "pytest-xdist>=3.8.0"]
+bench = ["opencv-python>=4.7", "numpy>=1.22"]
+
+[tool.pytest.ini_options]
+addopts = "-m 'not bench'"
+markers = [
+    "bench: performance regression gate against OpenCV; excluded by default, run explicitly and serialized with pytest -m bench -n0 -s on an otherwise idle machine",
+]
+
+[tool.basedpyright]
+pythonVersion = "3.12"
+typeCheckingMode = "all"
+include = ["src", "tests"]
+# numpy (the [io] extra) and opencv-python (the bench group) leak Any/Unknown
+# through their public surfaces; that is not our code's problem.
+reportAny = false
+reportMissingTypeStubs = false
+reportUnknownVariableType = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+reportUnknownLambdaType = false
+# Ban explicit Any in our own annotations.
+reportExplicitAny = "error"
