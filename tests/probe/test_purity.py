@@ -24,6 +24,7 @@ STDLIB_ONLY_TARGETS: tuple[Path, ...] = (
     CORE_ROOT / "probe",
     CORE_ROOT / "thumbnail",
     CORE_ROOT / "hwaccel.py",
+    CORE_ROOT / "transcode",
 )
 
 # The io layer adds numpy on top of the stdlib-only core. It reads the core's
@@ -33,16 +34,17 @@ NUMPY_LAYER_TARGETS: tuple[Path, ...] = (CORE_ROOT / "io",)
 
 # The one-way layering across the checked layers, keyed by the first path
 # component under src/mosaic_media (module stem for top-level files). Each
-# entry lists the layers a file there may reach with a relative import. io may
-# reach the core (probe, hwaccel) and itself; the still-heavier layers
-# (transcode, cli) are absent on purpose: reaching them is a violation, and a
-# new layer must be added explicitly.
+# entry lists the layers a file there may reach with a relative import. io and
+# transcode may reach the core (probe, hwaccel) and themselves; the
+# still-heavier cli layer is absent on purpose: reaching it is a violation,
+# and a new layer must be added explicitly.
 CORE_RELATIVE_IMPORT_ALLOWANCES: dict[str, frozenset[str]] = {
     "__init__": frozenset({"probe", "thumbnail"}),
     "hwaccel": frozenset(),
+    "io": frozenset({"io", "probe", "hwaccel"}),
     "probe": frozenset({"probe"}),
     "thumbnail": frozenset({"thumbnail", "probe"}),
-    "io": frozenset({"io", "probe", "hwaccel"}),
+    "transcode": frozenset({"transcode", "probe", "hwaccel"}),
 }
 
 

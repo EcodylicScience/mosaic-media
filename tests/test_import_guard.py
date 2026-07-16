@@ -56,6 +56,9 @@ import mosaic_media.probe.verdict
 import mosaic_media.thumbnail
 import mosaic_media.thumbnail.downscale
 import mosaic_media.thumbnail.extract
+import mosaic_media.transcode
+import mosaic_media.transcode.commands
+import mosaic_media.transcode.convert
 """
 
 
@@ -119,3 +122,17 @@ def test_the_io_subpackage_imports_without_typer() -> None:
 def test_the_io_subpackage_imports_without_cv2() -> None:
     result = _run_guarded("import mosaic_media.io\n", forbidden_root="cv2")
     assert result.returncode == 0, result.stderr
+
+
+def test_the_cli_needs_typer_and_the_core_does_not() -> None:
+    # In a fresh subprocess with typer poisoned, a core module still imports but
+    # the cli layer does not -- typer is confined to cli. Running in a subprocess
+    # (not in-process) is what makes this real: an in-process import would find the
+    # modules already cached in sys.modules and prove nothing.
+    core = _run_guarded(
+        "import mosaic_media.transcode.commands", forbidden_root="typer"
+    )
+    assert core.returncode == 0, core.stderr
+    cli = _run_guarded("import mosaic_media.cli", forbidden_root="typer")
+    assert cli.returncode != 0
+    assert "typer" in cli.stderr
