@@ -35,6 +35,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..probe.errors import MediaProbeError
 from ..probe.facts import MediaFacts
 from ..probe.policy import PlaybackProfile, Thresholds
 from ..probe.probe import probe_media
@@ -164,7 +165,13 @@ def run_transcode(
     argv = (*command.argv[:-1], str(temporary))
     try:
         _run_ffmpeg(argv, source, timeout)
-        output_facts = probe_media(temporary, thresholds)
+        try:
+            output_facts = probe_media(temporary, thresholds)
+        except MediaProbeError as exc:
+            message = (
+                f"transcode of {source} produced output that could not be probed: {exc}"
+            )
+            raise TranscodeError(message) from exc
         output_verdict = derive(output_facts, profile, thresholds)
         # Terminal acceptance gate: the output must be fully clean for the target,
         # not merely free of the reasons this command set out to fix. A transcode

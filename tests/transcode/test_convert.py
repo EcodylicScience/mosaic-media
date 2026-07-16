@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from mosaic_media import hwaccel
+from mosaic_media.probe.errors import MediaProbeError
 from mosaic_media.probe.facts import MediaFacts
 from mosaic_media.probe.policy import CHROME_149, DEFAULT_THRESHOLDS
 from mosaic_media.probe.probe import probe_media
@@ -252,6 +253,38 @@ def test_a_still_red_analysis_output_is_a_terminal_failure(
             thresholds=DEFAULT_THRESHOLDS,
             encoding=ANALYSIS_ENCODING,
         )
+
+
+def test_an_unprobeable_output_is_a_terminal_failure(
+    clips: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Force the output re-probe to raise MediaProbeError, as it would when ffmpeg
+    # writes bytes the prober cannot read. `run_transcode` promises TranscodeError
+    # for every terminal failure, so this one must be translated, not propagated
+    # raw, and the temporary output must still be cleaned up.
+    source = clips["cfr_mp4"]
+
+    def unprobeable_output(path: Path, _thresholds: object) -> MediaFacts:
+        if path == source:
+            return probe_media(path)
+        message = f"simulated unreadable output at {path}"
+        raise MediaProbeError(message)
+
+    monkeypatch.setattr(convert_module, "probe_media", unprobeable_output)
+    facts = probe_media(source)
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    with pytest.raises(TranscodeError, match="could not be probed"):
+        _ = run_transcode(
+            source,
+            tmp_path / "out.mp4",
+            "playback",
+            facts,
+            verdict,
+            profile=CHROME_149,
+            thresholds=DEFAULT_THRESHOLDS,
+            encoding=PLAYBACK_ENCODING,
+        )
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_a_residual_recommended_playback_output_is_surfaced_not_failed(
