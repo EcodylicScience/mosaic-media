@@ -136,3 +136,8 @@ def test_the_cli_needs_typer_and_the_core_does_not() -> None:
     cli = _run_guarded("import mosaic_media.cli", forbidden_root="typer")
     assert cli.returncode != 0
     assert "typer" in cli.stderr
+
+
+def test_the_cli_imports_without_numpy() -> None:
+    result = _run_guarded("import mosaic_media.cli", forbidden_root="numpy")
+    assert result.returncode == 0, result.stderr

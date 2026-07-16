@@ -1,5 +1,9 @@
 """Verdict to ffmpeg argv. Pure construction, no I/O.
 
+Exception: when the caller passes `allow_hardware=True`, the encoder-argument
+selection consults `hwaccel.encoder_available`, a cached ffmpeg capability
+probe that spawns a subprocess on a cold cache.
+
 The command selects the minimum operation that clears a target's reasons, never a
 blanket re-encode. A header that lies about timing needs a `-c copy` remux that
 regenerates timestamps; a `moov` at the tail needs `-movflags +faststart`; a

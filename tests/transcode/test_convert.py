@@ -221,7 +221,7 @@ def test_a_still_red_playback_output_is_a_terminal_failure(
             thresholds=DEFAULT_THRESHOLDS,
             encoding=PLAYBACK_ENCODING,
         )
-    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_a_still_red_analysis_output_is_a_terminal_failure(
@@ -253,6 +253,7 @@ def test_a_still_red_analysis_output_is_a_terminal_failure(
             thresholds=DEFAULT_THRESHOLDS,
             encoding=ANALYSIS_ENCODING,
         )
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_an_unprobeable_output_is_a_terminal_failure(
