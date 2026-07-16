@@ -11,8 +11,8 @@ from pathlib import Path
 
 import numpy
 
-from mosaic_media.hwaccel import encoder_available, ffmpeg_available
-from mosaic_media.probe.errors import MediaProbeError
+from ..hwaccel import encoder_available, ffmpeg_available
+from ..probe.errors import MediaProbeError
 
 
 class FFmpegVideoWriter:
@@ -135,7 +135,9 @@ class FFmpegVideoWriter:
             except subprocess.TimeoutExpired:
                 return
         if returncode != 0:
-            message = f"ffmpeg exited with code {returncode} writing {self._output_path}"
+            message = (
+                f"ffmpeg exited with code {returncode} writing {self._output_path}"
+            )
             raise MediaProbeError(message)
 
     def __enter__(self) -> "FFmpegVideoWriter":

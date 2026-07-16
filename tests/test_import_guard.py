@@ -109,3 +109,13 @@ def test_io_subpackage_requires_numpy() -> None:
     assert result.returncode != 0
     assert "io imported without numpy" not in (result.stdout + result.stderr)
     assert "numpy" in (result.stdout + result.stderr).lower()
+
+
+def test_the_io_subpackage_imports_without_typer() -> None:
+    result = _run_guarded("import mosaic_media.io\n", forbidden_root="typer")
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_io_subpackage_imports_without_cv2() -> None:
+    result = _run_guarded("import mosaic_media.io\n", forbidden_root="cv2")
+    assert result.returncode == 0, result.stderr

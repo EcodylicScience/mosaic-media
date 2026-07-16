@@ -1,3 +1,16 @@
+"""The reader matches OpenCV's decode for the formats both can read.
+
+The comparison allows a per-channel difference of at most 2. That slack is
+swscale-version rounding in the yuv-to-bgr color conversion: different ffmpeg and
+OpenCV builds round the same coefficients slightly differently, so a correct
+decode can still differ by one or two levels per channel between builds. Every
+defect class this suite exists to catch -- an off-by-N seek, a BGR/RGB channel
+swap, a wrong returned frame, a BT.601/709 matrix mixup -- moves whole regions of
+the frame by far more than two levels, so a tolerance of 2 separates them cleanly
+from conversion noise. Exact-byte duty is carried elsewhere, by the framemd5
+goldens that hash the decoded frame in the reader's own pixel format.
+"""
+
 from pathlib import Path
 
 import numpy

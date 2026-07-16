@@ -21,11 +21,10 @@ from typing import Literal
 
 import numpy
 
-from mosaic_media.hwaccel import ffmpeg_available, nvdec_available
-from mosaic_media.probe.errors import MediaProbeError
-from mosaic_media.probe.facts import MediaFacts
-from mosaic_media.probe.ffprobe import read_header, scan_packets
-
+from ..hwaccel import ffmpeg_available, nvdec_available
+from ..probe.errors import MediaProbeError
+from ..probe.facts import MediaFacts
+from ..probe.ffprobe import read_header, scan_packets
 from .index import SeekIndex, build_seek_index
 
 # Linux fcntl.F_SETPIPE_SZ. Hard-coded so the module imports on platforms whose

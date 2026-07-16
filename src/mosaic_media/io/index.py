@@ -14,7 +14,7 @@ import bisect
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from mosaic_media.probe.ffprobe import Packet
+from ..probe.ffprobe import Packet
 
 
 @dataclass(frozen=True, slots=True)

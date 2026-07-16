@@ -13,12 +13,11 @@ from pathlib import Path
 
 import numpy
 
-from mosaic_media.probe.errors import MediaProbeError
-from mosaic_media.probe.facts import MediaFacts
-from mosaic_media.probe.ffprobe import read_header, scan_packets
-from mosaic_media.probe.probe import probe_media
-from mosaic_media.probe.sequence import MeasuredVideoProperties, uniform_properties
-
+from ..probe.errors import MediaProbeError
+from ..probe.facts import MediaFacts
+from ..probe.ffprobe import read_header, scan_packets
+from ..probe.probe import probe_media
+from ..probe.sequence import MeasuredVideoProperties, uniform_properties
 from .index import SeekIndex, build_seek_index
 from .reader import VideoReader
 

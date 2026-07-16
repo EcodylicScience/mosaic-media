@@ -106,3 +106,28 @@ def test_seek_outside_window_raises(corpus_gop12: Path) -> None:
             reader.seek(30)  # at the exclusive end bound
         with pytest.raises(IndexError):
             reader.seek(31)  # above the end bound
+
+
+def test_deep_seek_into_long_gop_is_frame_exact(corpus_gop250: Path) -> None:
+    # gop=250 over 300 frames: frame 240 sits deep inside the first keyframe's
+    # group, so the seek respawns at frame 0 and discards 240 frames. The land
+    # must still be frame-exact against the golden.
+    goldens = decode_md5s(corpus_gop250)
+    with VideoReader(corpus_gop250) as reader:
+        reader.seek(240)
+        ok, frame = reader.read()
+    assert ok
+    assert frame is not None
+    assert frame_md5(frame) == goldens[240]
+
+
+def test_sparse_read_within_long_gop(corpus_gop250: Path) -> None:
+    # All three targets share the frame-0 keyframe, so read_frames decodes them
+    # in a single forward pass through the giant GOP.
+    goldens = decode_md5s(corpus_gop250)
+    targets = [180, 210, 240]
+    with VideoReader(corpus_gop250) as reader:
+        produced = {
+            index: frame_md5(frame) for index, frame in reader.read_frames(targets)
+        }
+    assert produced == {index: goldens[index] for index in targets}
