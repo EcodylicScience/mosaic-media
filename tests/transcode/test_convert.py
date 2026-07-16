@@ -153,6 +153,19 @@ def test_it_refuses_to_overwrite_the_source(clips: dict[str, Path]) -> None:
         _ = transcode(source, source, "playback", PLAYBACK_ENCODING)
 
 
+def test_it_refuses_a_non_mp4_file_destination(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # The temp file's .mp4 suffix always selects the mp4 muxer, so a destination
+    # naming any other container would misdescribe the bytes actually written.
+    source = clips["cfr_mp4"]
+    destination = tmp_path / "out.webm"
+    with pytest.raises(TranscodeError, match="always produces an mp4 container"):
+        _ = transcode(source, destination, "playback", PLAYBACK_ENCODING)
+    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_lying_header_source_remuxes_with_a_corrected_timebase(
     lying_header_mkv: Path, tmp_path: Path
 ) -> None:

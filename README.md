@@ -242,9 +242,11 @@ mosaic media transcode video.mp4 --target playback --output media/
 
 `--output` is required and takes a file path or a directory. Given a directory,
 the derivative's filename is derived from the source stem with an `.mp4`
-container; given a file path, that path is used as-is. The resolved output may
-never equal the source -- the original upload is preserved in every case, so the
-converter refuses to write over it. The package holds no knowledge of any
+container; given a file path, that path is used as-is. A file destination must
+end in `.mp4` -- the produced container is always mp4, and the converter
+refuses a destination whose extension would misdescribe it. The resolved output
+may never equal the source -- the original upload is preserved in every case, so
+the converter refuses to write over it. The package holds no knowledge of any
 dataset directory layout: a convention like keeping originals in `media_raw/`
 and transcodes in `media/` belongs to the caller, exactly like browser policy.
 Re-running the same transcode replaces its output atomically.

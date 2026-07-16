@@ -87,10 +87,20 @@ def _resolve_output(source: Path, output: Path) -> Path:
     An existing directory means "write the derivative here under the source stem
     with an .mp4 container"; anything else is used as the file path verbatim. A
     resolved destination equal to the source raises, because originals are always
-    preserved.
+    preserved. A file destination whose suffix is not .mp4 also raises: the
+    converter always produces an mp4 container, so any other extension would
+    misdescribe the bytes it writes. Directory destinations are unaffected, since
+    the derived filename already carries an .mp4 container.
     """
     destination = output / f"{source.stem}.mp4" if output.is_dir() else output
     destination = destination.absolute()
+    if destination.suffix.lower() != ".mp4":
+        message = (
+            f"refusing to write {destination} with suffix {destination.suffix!r}: "
+            "the converter always produces an mp4 container, so a file destination "
+            "must end in .mp4"
+        )
+        raise TranscodeError(message)
     if destination.resolve() == source.resolve():
         message = (
             f"refusing to overwrite the source {source}: "
@@ -129,8 +139,9 @@ def run_transcode(
     output must need no analysis transcode, and playback output must not be
     unplayable. A playback output that still carries a soft reason is not a failure
     but is reported through `TranscodeResult.residual_recommended`. Raises
-    `TranscodeError` when ffmpeg fails, when the resolved destination equals the
-    source, or when the output is not clean for the target.
+    `TranscodeError` when ffmpeg fails, when a file destination's suffix is not
+    .mp4, when the resolved destination equals the source, or when the output is
+    not clean for the target.
     """
     destination = _resolve_output(source, output)
     command = build_command(
