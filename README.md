@@ -136,6 +136,15 @@ It is also an upgrade rather than a risk: the reader being replaced seeks with
 OpenCV's `CAP_PROP_POS_FRAMES`, which is a well-known source of off-by-N frame
 errors.
 
+The reader's subprocess architecture -- one persistent ffmpeg process for
+sequential reads, respawned with an input `-ss` for a discontinuous seek -- is
+adopted from established practice: moviepy's `FFMPEG_VideoReader` (MIT) and
+imageio-ffmpeg (BSD-2) both read frames this way. It improves on both by seeking
+against the exact packet index rather than by timestamp guesswork: the preceding
+keyframe of a target frame is known, so a seek respawns at that keyframe and
+discards a known number of frames, landing frame-exact. That is the structural
+fix for OpenCV's off-by-N seeking.
+
 
 ## The OpenCV decode problem
 
