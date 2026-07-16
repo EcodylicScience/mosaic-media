@@ -96,6 +96,11 @@ def test_the_core_imports_without_cv2() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_the_core_imports_without_av() -> None:
+    result = _run_guarded(_CORE_IMPORTS, forbidden_root="av")
+    assert result.returncode == 0, result.stderr
+
+
 def test_core_facade_imports_without_numpy() -> None:
     result = _run_guarded("import mosaic_media\n", forbidden_root="numpy")
     assert result.returncode == 0, result.stderr
@@ -153,4 +158,9 @@ def test_the_cli_needs_typer_and_the_core_does_not() -> None:
 
 def test_the_cli_imports_without_numpy() -> None:
     result = _run_guarded("import mosaic_media.cli", forbidden_root="numpy")
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_cli_imports_without_av() -> None:
+    result = _run_guarded("import mosaic_media.cli", forbidden_root="av")
     assert result.returncode == 0, result.stderr
