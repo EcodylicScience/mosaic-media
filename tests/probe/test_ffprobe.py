@@ -86,10 +86,12 @@ def test_scan_packets_prefers_pts_when_both_are_present(
     assert source == "pts"
 
 
-def test_packet_csv_column_order_is_pts_dts_size_flags(clips: dict[str, Path]) -> None:
+def test_packet_csv_column_order_is_pts_dts_size_pos_flags(
+    clips: dict[str, Path],
+) -> None:
     # ffprobe emits -show_entries fields in its own natural order, not the order
     # requested. If a future ffmpeg reorders them the parser silently mis-reads
-    # size as flags. This test is the canary.
+    # a column. This test is the canary for the five-field scan.
     import subprocess
 
     command = [
@@ -99,7 +101,7 @@ def test_packet_csv_column_order_is_pts_dts_size_flags(clips: dict[str, Path]) -
         "-select_streams",
         "v:0",
         "-show_entries",
-        "packet=pts_time,dts_time,size,flags",
+        "packet=pts_time,dts_time,size,pos,flags",
         "-of",
         "csv=p=0",
         str(clips["cfr_mp4"]),
@@ -108,7 +110,18 @@ def test_packet_csv_column_order_is_pts_dts_size_flags(clips: dict[str, Path]) -
         command, capture_output=True, text=True, timeout=60
     ).stdout.splitlines()[0]
     columns = first.split(",")
-    assert len(columns) == 4
-    assert float(columns[0]) >= 0.0
-    assert columns[2].isdigit()
-    assert "K" in columns[3] or "_" in columns[3]
+    assert len(columns) == 5
+    assert float(columns[0]) >= 0.0  # pts_time
+    assert columns[2].isdigit()  # size
+    assert columns[3].lstrip("-").isdigit()  # pos
+    assert "K" in columns[4] or "_" in columns[4]  # flags
+
+
+def test_scan_packets_populates_byte_offset(clips: dict[str, Path]) -> None:
+    packets, _source = scan_packets(clips["cfr_mp4"], video_position=0)
+    # The first packet of an mp4 sits at a small positive byte offset; every
+    # packet in a well-formed mp4 has a known position.
+    assert packets[0].pos >= 0
+    assert all(packet.pos >= 0 for packet in packets)
+    # Positions are distinct: no two packets share a byte offset.
+    assert len({packet.pos for packet in packets}) == len(packets)

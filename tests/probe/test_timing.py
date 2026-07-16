@@ -7,7 +7,7 @@ from mosaic_media.probe.timing import is_truncated, measure_timing
 
 def uniform(count: int, fps: float) -> tuple[Packet, ...]:
     return tuple(
-        Packet(time=index / fps, size=100, keyframe=index == 0)
+        Packet(time=index / fps, size=100, keyframe=index == 0, pos=index)
         for index in range(count)
     )
 
@@ -26,7 +26,7 @@ def test_millisecond_quantization_stays_constant_rate() -> None:
     # container quantizes timestamps to milliseconds. vfrdet calls them 73% and
     # 88% variable; the drift fit must not.
     packets = tuple(
-        Packet(time=round(index / 29.97, 3), size=100, keyframe=index == 0)
+        Packet(time=round(index / 29.97, 3), size=100, keyframe=index == 0, pos=index)
         for index in range(450)
     )
     assert measure_timing(packets, drift_frame_periods=0.5).constant_frame_rate
@@ -35,7 +35,10 @@ def test_millisecond_quantization_stays_constant_rate() -> None:
 def test_a_dropped_frame_makes_it_variable() -> None:
     times = [index / 25.0 for index in range(100)]
     times = times[:50] + [value + 3 / 25.0 for value in times[50:]]
-    packets = tuple(Packet(time=value, size=100, keyframe=False) for value in times)
+    packets = tuple(
+        Packet(time=value, size=100, keyframe=False, pos=index)
+        for index, value in enumerate(times)
+    )
     timing = measure_timing(packets, drift_frame_periods=0.5)
     assert not timing.constant_frame_rate
     assert timing.max_instantaneous_fps is not None
@@ -44,7 +47,7 @@ def test_a_dropped_frame_makes_it_variable() -> None:
 def test_duplicate_timestamps_are_deduplicated() -> None:
     # VP8 invisible alt-ref frames share a presentation timestamp with the frame
     # they precede. Behavioral Despair...webm has 533 of them in 9603 packets.
-    packets = uniform(100, 25.0) + (Packet(time=0.0, size=10, keyframe=False),)
+    packets = uniform(100, 25.0) + (Packet(time=0.0, size=10, keyframe=False, pos=0),)
     assert measure_timing(packets, drift_frame_periods=0.5).frame_count == 100
 
 
@@ -78,14 +81,20 @@ def test_a_jittery_boundary_frame_does_not_flip_a_constant_file() -> None:
     # exactly this reason.
     times = [index / 25.0 for index in range(99)]
     times[-1] += 0.2 / 25.0
-    packets = tuple(Packet(time=value, size=100, keyframe=False) for value in times)
+    packets = tuple(
+        Packet(time=value, size=100, keyframe=False, pos=index)
+        for index, value in enumerate(times)
+    )
     assert measure_timing(packets, drift_frame_periods=0.5).constant_frame_rate
 
 
 def test_a_jittery_first_frame_does_not_flip_a_constant_file() -> None:
     times = [index / 25.0 for index in range(99)]
     times[0] -= 0.2 / 25.0
-    packets = tuple(Packet(time=value, size=100, keyframe=False) for value in times)
+    packets = tuple(
+        Packet(time=value, size=100, keyframe=False, pos=index)
+        for index, value in enumerate(times)
+    )
     assert measure_timing(packets, drift_frame_periods=0.5).constant_frame_rate
 
 
@@ -95,7 +104,10 @@ def test_a_non_uniform_middle_is_variable_even_with_endpoints_on_the_grid() -> N
     times = [index / 25.0 for index in range(50)]
     times += [2.0 + (index + 1) * 0.001 for index in range(48)]
     times += [4.0]
-    packets = tuple(Packet(time=value, size=100, keyframe=False) for value in times)
+    packets = tuple(
+        Packet(time=value, size=100, keyframe=False, pos=index)
+        for index, value in enumerate(times)
+    )
     timing = measure_timing(packets, drift_frame_periods=0.5)
     assert not timing.constant_frame_rate
     assert timing.max_drift_frame_periods > 10.0
@@ -104,7 +116,10 @@ def test_a_non_uniform_middle_is_variable_even_with_endpoints_on_the_grid() -> N
 def test_millisecond_quantization_stays_constant_over_a_long_file() -> None:
     # Quantization error does not accumulate: the fitted slope absorbs it.
     times = [round(index / (30000 / 1001), 3) for index in range(9000)]
-    packets = tuple(Packet(time=value, size=100, keyframe=False) for value in times)
+    packets = tuple(
+        Packet(time=value, size=100, keyframe=False, pos=index)
+        for index, value in enumerate(times)
+    )
     timing = measure_timing(packets, drift_frame_periods=0.5)
     assert timing.constant_frame_rate
     assert timing.max_drift_frame_periods < 0.1

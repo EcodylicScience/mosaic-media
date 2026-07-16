@@ -4,11 +4,11 @@ from mosaic_media.probe.gop import measure_gop
 
 def test_gop_bytes_and_frames_are_the_worst_interval() -> None:
     packets = (
-        Packet(time=0.0, size=1000, keyframe=True),
-        Packet(time=0.04, size=10, keyframe=False),
-        Packet(time=0.08, size=10, keyframe=False),
-        Packet(time=0.12, size=5000, keyframe=True),
-        Packet(time=0.16, size=10, keyframe=False),
+        Packet(time=0.0, size=1000, keyframe=True, pos=0),
+        Packet(time=0.04, size=10, keyframe=False, pos=1000),
+        Packet(time=0.08, size=10, keyframe=False, pos=1010),
+        Packet(time=0.12, size=5000, keyframe=True, pos=1020),
+        Packet(time=0.16, size=10, keyframe=False, pos=6020),
     )
     stats = measure_gop(packets)
     assert stats.max_gop_bytes == 5010
@@ -17,7 +17,8 @@ def test_gop_bytes_and_frames_are_the_worst_interval() -> None:
 
 def test_a_file_with_no_keyframe_flag_is_one_interval() -> None:
     packets = tuple(
-        Packet(time=index / 25.0, size=100, keyframe=False) for index in range(10)
+        Packet(time=index / 25.0, size=100, keyframe=False, pos=index)
+        for index in range(10)
     )
     stats = measure_gop(packets)
     assert stats.max_gop_bytes == 1000
@@ -32,10 +33,10 @@ def test_intervals_follow_decode_order_not_presentation_order() -> None:
     # placing it in the first GOP in decode order and the second GOP once sorted
     # by time. The two orders give different answers; only decode order is right.
     packets = (
-        Packet(time=0.0, size=100, keyframe=True),
-        Packet(time=0.20, size=9000, keyframe=False),
-        Packet(time=0.10, size=100, keyframe=True),
-        Packet(time=0.30, size=100, keyframe=False),
+        Packet(time=0.0, size=100, keyframe=True, pos=0),
+        Packet(time=0.20, size=9000, keyframe=False, pos=100),
+        Packet(time=0.10, size=100, keyframe=True, pos=9100),
+        Packet(time=0.30, size=100, keyframe=False, pos=9200),
     )
     stats = measure_gop(packets)
     assert stats.max_gop_bytes == 9100
@@ -49,7 +50,7 @@ def test_frequent_keyframes_and_a_high_bitrate_still_show_a_large_payload() -> N
     # seek, because it runs at roughly 60 Mbit/s. A keyframe-interval metric alone
     # would pass it. This is why max_gop_bytes is the primary signal.
     packets = tuple(
-        Packet(time=index / 50.0, size=170_000, keyframe=index % 24 == 0)
+        Packet(time=index / 50.0, size=170_000, keyframe=index % 24 == 0, pos=index)
         for index in range(48)
     )
     stats = measure_gop(packets)

@@ -47,6 +47,7 @@ class Packet:
     time: float
     size: int
     keyframe: bool
+    pos: int
 
 
 def _run(command: list[str], timeout: int, action: str) -> str:
@@ -246,7 +247,7 @@ def scan_packets(
         "-select_streams",
         f"v:{video_position}",
         "-show_entries",
-        "packet=pts_time,dts_time,size,flags",
+        "packet=pts_time,dts_time,size,pos,flags",
         "-of",
         "csv=p=0",
         str(path.absolute()),
@@ -256,21 +257,26 @@ def scan_packets(
     pts_packets: list[Packet] = []
     dts_packets: list[Packet] = []
     for line in raw.splitlines():
+        # ffprobe emits the requested entries in its own natural order:
+        # pts_time, dts_time, size, pos, flags. Byte offset (pos) is N/A on
+        # containers that do not expose it; it is carried for io consumers and
+        # is not used by the timestamp-based seek path, so -1 is a safe unknown.
         columns = line.split(",")
-        if len(columns) < 4:
+        if len(columns) < 5:
             continue
-        size_text, flags = columns[2], columns[3]
+        size_text, pos_text, flags = columns[2], columns[3], columns[4]
         if not size_text.isdigit():
             continue
         size = int(size_text)
+        pos = int(pos_text) if pos_text.lstrip("-").isdigit() else -1
         keyframe = "K" in flags
         if columns[0] not in _ABSENT:
             pts_packets.append(
-                Packet(time=float(columns[0]), size=size, keyframe=keyframe)
+                Packet(time=float(columns[0]), size=size, keyframe=keyframe, pos=pos)
             )
         if columns[1] not in _ABSENT:
             dts_packets.append(
-                Packet(time=float(columns[1]), size=size, keyframe=keyframe)
+                Packet(time=float(columns[1]), size=size, keyframe=keyframe, pos=pos)
             )
 
     if pts_packets:
