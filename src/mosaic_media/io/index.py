@@ -64,10 +64,20 @@ class SeekIndex:
 
 
 def build_seek_index(packets: tuple[Packet, ...]) -> SeekIndex:
-    """Build a SeekIndex from a decode-order packet scan."""
-    order = sorted(range(len(packets)), key=lambda position: packets[position].time)
-    frame_times = tuple(packets[position].time for position in order)
+    """Build a SeekIndex from a packet scan, deduplicating presentation
+    timestamps consistently with measure_timing (sorted({packet.time ...})).
+
+    A container can carry several packets at one presentation timestamp -- an
+    invisible VP8/VP9 alternate-reference packet shares its visible frame's
+    timestamp. The frame model counts distinct timestamps, so frame_times is
+    the sorted set of packet times and frame_count equals MediaFacts.frame_count
+    by construction. A distinct timestamp is a keyframe timestamp when any
+    packet bearing it is keyframe-flagged, so a preceding duplicate can no
+    longer shift a keyframe's rank.
+    """
+    keyframe_times = {packet.time for packet in packets if packet.keyframe}
+    frame_times = tuple(sorted({packet.time for packet in packets}))
     keyframe_indices = tuple(
-        rank for rank, position in enumerate(order) if packets[position].keyframe
+        rank for rank, time in enumerate(frame_times) if time in keyframe_times
     )
     return SeekIndex(frame_times=frame_times, keyframe_indices=keyframe_indices)

@@ -114,6 +114,19 @@ def test_io_subpackage_requires_numpy() -> None:
     assert "numpy" in (result.stdout + result.stderr).lower()
 
 
+def test_io_subpackage_requires_av() -> None:
+    result = _run_guarded(
+        "import mosaic_media.io\nraise SystemExit('io imported without av')\n",
+        forbidden_root="av",
+    )
+    # Importing mosaic_media.io must fail because av is poisoned; the SystemExit
+    # sentinel must never be reached. av is as mandatory to io as numpy -- one
+    # decode stack, no half-alive import mode whose reader cannot open anything.
+    assert result.returncode != 0
+    assert "io imported without av" not in (result.stdout + result.stderr)
+    assert "av" in (result.stdout + result.stderr).lower()
+
+
 def test_the_io_subpackage_imports_without_typer() -> None:
     result = _run_guarded("import mosaic_media.io\n", forbidden_root="typer")
     assert result.returncode == 0, result.stderr

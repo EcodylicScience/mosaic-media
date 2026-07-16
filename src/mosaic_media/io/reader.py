@@ -24,8 +24,9 @@ import numpy
 from ..hwaccel import ffmpeg_available, nvdec_available
 from ..probe.errors import MediaProbeError
 from ..probe.facts import MediaFacts
-from ..probe.ffprobe import read_header, scan_packets
+from ..probe.ffprobe import read_header
 from .index import SeekIndex, build_seek_index
+from .packets import scan_packets_in_process
 
 # Linux fcntl.F_SETPIPE_SZ. Hard-coded so the module imports on platforms whose
 # fcntl lacks the constant; the fcntl call is guarded and best-effort anyway.
@@ -106,8 +107,7 @@ class VideoReader:
 
     def _ensure_index(self) -> SeekIndex:
         if self._index is None:
-            header = read_header(self._path)
-            packets, _source = scan_packets(self._path, header.video_position)
+            packets, _source = scan_packets_in_process(self._path)
             self._index = build_seek_index(packets)
         return self._index
 

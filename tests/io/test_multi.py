@@ -137,18 +137,16 @@ def test_segment_packet_index_is_scanned_once(
 ) -> None:
     # Two seeks into the same segment must scan that segment's packets once: the
     # index is built on first open and cached, then injected on every reopen.
-    from mosaic_media.probe.ffprobe import scan_packets as real_scan
+    from mosaic_media.io.packets import scan_packets_in_process as real_scan
 
     calls = 0
 
-    def counting_scan(
-        path: Path, video_position: int
-    ) -> tuple[tuple[Packet, ...], TimestampSource]:
+    def counting_scan(path: Path) -> tuple[tuple[Packet, ...], TimestampSource]:
         nonlocal calls
         calls += 1
-        return real_scan(path, video_position)
+        return real_scan(path)
 
-    monkeypatch.setattr("mosaic_media.io.multi.scan_packets", counting_scan)
+    monkeypatch.setattr("mosaic_media.io.multi.scan_packets_in_process", counting_scan)
     first, second = two_clips
     with MultiVideoReader([first, second]) as reader:
         reader.seek(3)

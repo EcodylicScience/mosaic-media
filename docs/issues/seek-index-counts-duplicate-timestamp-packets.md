@@ -43,3 +43,31 @@ so no shipped workflow hits the defect today.
   seek/`read_frames` test on that clip passes against `ffmpeg -f framemd5`
   ground truth.
 - The full pipeline stays green.
+
+## Resolution (closed 2026-07-17)
+
+`build_seek_index` now deduplicates presentation timestamps -- `frame_times`
+is `tuple(sorted({packet.time ...}))` and a distinct timestamp is a keyframe
+timestamp when any packet bearing it is keyframe-flagged -- so
+`SeekIndex.frame_count` equals `MediaFacts.frame_count` by construction, the
+same distinct-timestamp count `measure_timing` uses. Under the in-process
+PTS-exact seek the reader compares decoded frame timestamps against the
+target, so packet identity is non-load-bearing: only the
+frame-index-to-distinct-timestamp map matters, and the deduplication is
+exactly that map. A preceding duplicate can no longer shift a keyframe's
+rank.
+
+The evidence is constructed-packet unit tests, not a generated clip. Five
+attempts to synthesize a duplicate-presentation-timestamp container with the
+local toolchain (ffmpeg 6.1.1, libvpx `-auto-alt-ref 1`) produced zero
+duplicate-pts packets: ffmpeg's libvpx path coalesces the invisible
+alternate-reference frame into the visible packet, so a synthetic container
+cannot exercise the defect. The real recording with 533 duplicate-timestamp
+packets (recorded in `tests/probe/test_timing.py`) came from an external
+screen recorder; the defect class arrives only from external producers, never
+from this stack's own encoders. The unit tests therefore build the duplicate
+packets directly -- asserting the dedup is consistent with `measure_timing`
+and that `SeekIndex.frame_count` matches the distinct-timestamp count -- which
+is the honest and sufficient closure. Production reads still go through
+transcoded H.264/AV1, one packet per presentation timestamp, and never hit
+the path.

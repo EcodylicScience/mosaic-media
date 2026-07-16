@@ -150,16 +150,19 @@ def test_the_core_imports_only_the_standard_library() -> None:
     assert offenders == {}, message
 
 
-def test_the_io_layer_imports_only_the_standard_library_and_numpy() -> None:
+def test_the_io_layer_imports_only_the_standard_library_numpy_and_av() -> None:
     modules = numpy_layer_files()
     assert modules, "io layer modules not found"
-    allowed = sys.stdlib_module_names | {"numpy"}
+    allowed = sys.stdlib_module_names | {"numpy", "av"}
     offenders: dict[str, set[str]] = {}
     for module in modules:
         outside = imported_roots(module.read_text()) - allowed
         if outside:
             offenders[module.name] = outside
-    message = f"the io layer must import only the standard library and numpy, found: {offenders}"
+    message = (
+        "the io layer must import only the standard library, numpy, and av, "
+        f"found: {offenders}"
+    )
     assert offenders == {}, message
 
 

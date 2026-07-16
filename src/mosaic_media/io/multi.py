@@ -15,10 +15,10 @@ import numpy
 
 from ..probe.errors import MediaProbeError
 from ..probe.facts import MediaFacts
-from ..probe.ffprobe import read_header, scan_packets
 from ..probe.probe import probe_media
 from ..probe.sequence import MeasuredVideoProperties, uniform_properties
 from .index import SeekIndex, build_seek_index
+from .packets import scan_packets_in_process
 from .reader import VideoReader
 
 
@@ -152,9 +152,7 @@ class MultiVideoReader:
         cached = self._indices[segment_index]
         if cached is not None:
             return cached
-        path = self._segments[segment_index].path
-        header = read_header(path)
-        packets, _source = scan_packets(path, header.video_position)
+        packets, _source = scan_packets_in_process(self._segments[segment_index].path)
         built = build_seek_index(packets)
         self._indices[segment_index] = built
         return built
