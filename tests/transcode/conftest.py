@@ -39,6 +39,33 @@ def variable_frame_rate_mp4(tmp_path_factory: pytest.TempPathFactory) -> Iterato
 
 
 @pytest.fixture(scope="session")
+def slow_reencode_source(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    root = tmp_path_factory.mktemp("slow_reencode")
+    # A larger variable-frame-rate clip whose analysis re-encode is slow enough to
+    # stream several -progress blocks and to stay running long enough to cancel
+    # mid-encode. Like variable_frame_rate_mp4 it relabels presentation times with
+    # setpts so the whole-file grid fit measures genuine drift; the extra frames
+    # and resolution keep the SVT-AV1 pass above a second. SVT-AV1 buffers a large
+    # lookahead before it emits any output, so a short clip flushes in a single
+    # burst -- 150 frames is enough to stream progress after the pipeline fills.
+    # `testsrc2` emits 150 frames at rate 30 over 5 s; the first 75 are spaced
+    # 1/30 s and the remaining 75 are spaced 1/15 s.
+    expression = "setpts='if(lt(N,75), N/30/TB, (2.5 + (N-75)/15)/TB)'"
+    yield build(
+        root / "slow_vfr.mp4",
+        "-vf",
+        expression,
+        "-fps_mode",
+        "passthrough",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        source=["-f", "lavfi", "-i", "testsrc2=size=512x384:rate=30:duration=5"],
+    )
+
+
+@pytest.fixture(scope="session")
 def lying_header_mkv(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     root = tmp_path_factory.mktemp("lying_header")
     # A raw H.264 elementary stream whose SPS VUI advertises 25 fps.

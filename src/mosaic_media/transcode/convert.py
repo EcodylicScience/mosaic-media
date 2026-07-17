@@ -30,10 +30,15 @@ dataset directory layout. Re-running a transcode to an existing output path
 replaces it atomically.
 """
 
+import queue
 import subprocess
 import tempfile
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from ..probe.errors import MediaProbeError
 from ..probe.facts import MediaFacts
@@ -45,12 +50,49 @@ from .commands import EncodingParameters, Operation, Target, build_command
 
 DEFAULT_TRANSCODE_TIMEOUT_SECONDS = 3600.0
 
+# How often ffmpeg emits a -progress block. A fine period gives a heartbeat
+# smooth progress and bounds how long a caller waits for the first update on a
+# short encode; the readings are cheap to parse, so a few per second costs
+# nothing.
+_PROGRESS_INTERVAL_SECONDS = 0.1
+# How often the run loop wakes to re-check the timeout deadline and the cancel
+# token while waiting for the next progress block. It only matters when the
+# encoder stalls or produces no output; it bounds how long a stalled or
+# canceled run keeps running.
+_PROGRESS_POLL_SECONDS = 0.1
+# Grace given to a terminated child to exit before it is killed outright.
+_TERMINATE_GRACE_SECONDS = 5.0
+
 
 class TranscodeError(RuntimeError):
     """A transcode failed to run, or its output was not clean for the target.
 
     Terminal: a caller must not respond by scheduling another transcode.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class TranscodeProgress:
+    """One progress sample emitted while ffmpeg runs.
+
+    `fraction` is the completed fraction in [0, 1], or None when the source
+    duration is unknown: a timestampless stream (a raw elementary stream) probes a
+    duration of 0.0, and those are exactly the files the analysis verdict
+    transcodes. `out_time` (seconds encoded so far), `speed` (the realtime
+    multiple), and `fps` are the raw ffmpeg readings, carried through so a caller
+    can still show indeterminate progress when `fraction` is None.
+    """
+
+    fraction: float | None
+    out_time: float | None
+    speed: float | None
+    fps: float | None
+
+
+# Injected by the caller and polled during the run: a progress sink and a
+# cooperative cancel token. Both are optional; the CLI passes neither.
+ProgressCallback = Callable[[TranscodeProgress], None]
+CancelCheck = Callable[[], bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,19 +108,165 @@ class TranscodeResult:
     residual_recommended: bool
 
 
-def _run_ffmpeg(argv: tuple[str, ...], source: Path, timeout: float) -> None:
+def _parse_reading(value: str | None) -> float | None:
+    """Parse one ffmpeg progress reading to a float, or None when it is absent.
+
+    Handles the `speed` value's trailing `x` (`1.23x`) and ffmpeg's `N/A`
+    placeholder for a reading it cannot yet report.
+    """
+    if value is None:
+        return None
+    stripped = value.strip().removesuffix("x")
+    if not stripped or stripped == "N/A":
+        return None
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-    except FileNotFoundError as exc:
-        message = f"ffmpeg binary not found on PATH: {exc}"
-        raise TranscodeError(message) from exc
-    except subprocess.TimeoutExpired as exc:
-        message = f"ffmpeg timed out after {timeout:g}s transcoding {source}"
-        raise TranscodeError(message) from exc
-    if result.returncode != 0:
-        detail = result.stderr.strip() or "unknown error"
-        message = f"ffmpeg failed transcoding {source}: {detail}"
-        raise TranscodeError(message)
+        return float(stripped)
+    except ValueError:
+        return None
+
+
+def _parse_clock(value: str | None) -> float | None:
+    """Parse an ffmpeg `HH:MM:SS.ffffff` timestamp to seconds, or None."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped or stripped == "N/A":
+        return None
+    parts = stripped.split(":")
+    if len(parts) != 3:
+        return None
+    hours, minutes, seconds = parts
+    try:
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except ValueError:
+        return None
+
+
+def _out_time_seconds(block: dict[str, str]) -> float | None:
+    """Seconds encoded so far: `out_time_us` first, the `out_time` clock as fallback."""
+    micros = _parse_reading(block.get("out_time_us"))
+    if micros is not None:
+        return micros / 1_000_000
+    return _parse_clock(block.get("out_time"))
+
+
+def _progress_from_block(block: dict[str, str], duration: float) -> TranscodeProgress:
+    out_time = _out_time_seconds(block)
+    # A timestampless source probes duration 0.0; then no completion fraction is
+    # knowable and the update stays indeterminate, carrying only the raw readings.
+    fraction = out_time / duration if out_time is not None and duration > 0 else None
+    return TranscodeProgress(
+        fraction=fraction,
+        out_time=out_time,
+        speed=_parse_reading(block.get("speed")),
+        fps=_parse_reading(block.get("fps")),
+    )
+
+
+def _terminate(process: "subprocess.Popen[str]") -> None:
+    """Stop a running ffmpeg child, escalating to a kill if it ignores the signal."""
+    process.terminate()
+    try:
+        _ = process.wait(timeout=_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        _ = process.wait()
+
+
+def _drain_stdout(stream: IO[str], sink: "queue.Queue[str | None]") -> None:
+    """Feed ffmpeg's progress lines to `sink`, then a None end marker at EOF.
+
+    Reading on a thread lets the run loop keep re-checking the timeout deadline
+    and the cancel token even while no progress line is arriving.
+    """
+    for line in stream:
+        sink.put(line)
+    sink.put(None)
+
+
+def _run_ffmpeg(
+    argv: tuple[str, ...],
+    source: Path,
+    timeout: float,
+    duration: float,
+    on_progress: ProgressCallback | None,
+    cancel_check: CancelCheck | None,
+) -> None:
+    # -progress writes a key=value stream to stdout; the -v error stderr keeps its
+    # failure detail. -progress and -stats_period are global options, so they go
+    # right after the ffmpeg binary, ahead of the inputs.
+    progress_argv = (
+        argv[0],
+        "-progress",
+        "pipe:1",
+        "-stats_period",
+        f"{_PROGRESS_INTERVAL_SECONDS:g}",
+        *argv[1:],
+    )
+    with tempfile.TemporaryFile(mode="w+") as stderr_file:
+        try:
+            process = subprocess.Popen(
+                progress_argv,
+                stdout=subprocess.PIPE,
+                stderr=stderr_file,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            message = f"ffmpeg binary not found on PATH: {exc}"
+            raise TranscodeError(message) from exc
+        assert process.stdout is not None
+        lines: queue.Queue[str | None] = queue.Queue()
+        reader = threading.Thread(
+            target=_drain_stdout, args=(process.stdout, lines), daemon=True
+        )
+        reader.start()
+        deadline = time.monotonic() + timeout
+        block: dict[str, str] = {}
+        try:
+            while True:
+                if cancel_check is not None and cancel_check():
+                    _terminate(process)
+                    message = f"transcode of {source} was canceled"
+                    raise TranscodeError(message)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _terminate(process)
+                    message = (
+                        f"ffmpeg timed out after {timeout:g}s transcoding {source}"
+                    )
+                    raise TranscodeError(message)
+                try:
+                    line = lines.get(timeout=min(remaining, _PROGRESS_POLL_SECONDS))
+                except queue.Empty:
+                    continue
+                if line is None:
+                    break
+                key, separator, value = line.strip().partition("=")
+                if not separator:
+                    continue
+                if key != "progress":
+                    block[key] = value
+                    continue
+                # A `progress=continue|end` line closes one block.
+                if on_progress is not None:
+                    on_progress(_progress_from_block(block, duration))
+                block = {}
+                if value == "end":
+                    break
+        finally:
+            reader.join(timeout=_TERMINATE_GRACE_SECONDS)
+        remaining = deadline - time.monotonic()
+        try:
+            returncode = process.wait(timeout=max(remaining, 0.0))
+        except subprocess.TimeoutExpired:
+            _terminate(process)
+            message = f"ffmpeg timed out after {timeout:g}s transcoding {source}"
+            raise TranscodeError(message)
+        if returncode != 0:
+            _ = stderr_file.seek(0)
+            detail = stderr_file.read().strip() or "unknown error"
+            message = f"ffmpeg failed transcoding {source}: {detail}"
+            raise TranscodeError(message)
 
 
 def _resolve_output(source: Path, output: Path) -> Path:
@@ -122,6 +310,8 @@ def run_transcode(
     encoding: EncodingParameters,
     allow_hardware: bool = False,
     timeout: float = DEFAULT_TRANSCODE_TIMEOUT_SECONDS,
+    on_progress: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> TranscodeResult:
     """Transcode `source` to `output` for `target`, or report a no-op when the
     source is already clean for that target.
@@ -142,6 +332,12 @@ def run_transcode(
     `TranscodeError` when ffmpeg fails, when a file destination's suffix is not
     .mp4, when the resolved destination equals the source, or when the output is
     not clean for the target.
+
+    `on_progress`, when given, is called with a `TranscodeProgress` for each block
+    ffmpeg emits during the encode. `cancel_check`, when given, is polled during
+    the run; a true result stops the child, cleans up the partial output, and
+    raises a `TranscodeError` naming the run canceled. Both default to None, so a
+    caller that wants neither -- including the CLI -- is unaffected.
     """
     destination = _resolve_output(source, output)
     command = build_command(
@@ -175,7 +371,7 @@ def run_transcode(
     handle.close()
     argv = (*command.argv[:-1], str(temporary))
     try:
-        _run_ffmpeg(argv, source, timeout)
+        _run_ffmpeg(argv, source, timeout, facts.duration, on_progress, cancel_check)
         try:
             output_facts = probe_media(temporary, thresholds)
         except MediaProbeError as exc:

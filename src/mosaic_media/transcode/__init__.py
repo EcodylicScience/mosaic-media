@@ -11,7 +11,10 @@ from .commands import (
 )
 from .convert import (
     DEFAULT_TRANSCODE_TIMEOUT_SECONDS,
+    CancelCheck,
+    ProgressCallback,
     TranscodeError,
+    TranscodeProgress,
     TranscodeResult,
     run_transcode,
 )
@@ -19,12 +22,15 @@ from .convert import (
 __all__ = [
     "ANALYSIS_ENCODING",
     "DEFAULT_TRANSCODE_TIMEOUT_SECONDS",
+    "CancelCheck",
     "EncodingParameters",
     "Operation",
     "PLAYBACK_ENCODING",
+    "ProgressCallback",
     "Target",
     "TranscodeCommand",
     "TranscodeError",
+    "TranscodeProgress",
     "TranscodeResult",
     "build_command",
     "run_transcode",

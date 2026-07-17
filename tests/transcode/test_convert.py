@@ -18,6 +18,7 @@ from mosaic_media.transcode import (
     Operation,
     Target,
     TranscodeError,
+    TranscodeProgress,
     TranscodeResult,
     run_transcode,
 )
@@ -443,3 +444,106 @@ def test_a_residual_recommended_playback_output_is_surfaced_not_failed(
     assert result.residual_recommended is True
     assert result.output_path is not None
     assert result.output_path.exists()
+
+
+@requires_svtav1
+def test_transcode_progress_reports_a_monotonic_fraction(
+    slow_reencode_source: Path, tmp_path: Path
+) -> None:
+    # A real AV1 re-encode of a source with a known duration drives on_progress
+    # with a completion fraction that only ever climbs. The slow re-encode streams
+    # several progress blocks before the last.
+    facts = probe_media(slow_reencode_source)
+    assert facts.duration > 0
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    updates: list[TranscodeProgress] = []
+    result = run_transcode(
+        slow_reencode_source,
+        tmp_path / "out.mp4",
+        "analysis",
+        facts,
+        verdict,
+        profile=CHROME_149,
+        thresholds=DEFAULT_THRESHOLDS,
+        encoding=ANALYSIS_ENCODING,
+        on_progress=updates.append,
+    )
+    assert result.performed
+    assert result.operation is Operation.REENCODE_AV1
+    fractions = [update.fraction for update in updates if update.fraction is not None]
+    assert len(fractions) >= 2
+    assert all(fraction >= 0.0 for fraction in fractions)
+    assert fractions == sorted(fractions)
+
+
+def test_transcode_progress_is_indeterminate_for_a_timestampless_source(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # A raw elementary stream carries no timestamps, so it probes a duration of
+    # 0.0 and its remux cannot report a completion fraction. Every update is
+    # indeterminate (fraction None), but the raw out_time still comes through so a
+    # caller can show that the run is progressing.
+    source = clips["raw_h264"]
+    facts = probe_media(source)
+    assert facts.duration == 0.0
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    updates: list[TranscodeProgress] = []
+    result = run_transcode(
+        source,
+        tmp_path / "out.mp4",
+        "analysis",
+        facts,
+        verdict,
+        profile=CHROME_149,
+        thresholds=DEFAULT_THRESHOLDS,
+        encoding=ANALYSIS_ENCODING,
+        on_progress=updates.append,
+    )
+    assert result.performed
+    assert result.operation is Operation.REMUX_TIMEBASE
+    assert updates
+    assert all(update.fraction is None for update in updates)
+    assert any(update.out_time is not None for update in updates)
+
+
+class _CancelAfterFirstProgress:
+    """A cancel token that trips once the encode has reported any progress.
+
+    Waiting for the first progress block proves the encoder is genuinely running
+    when the cancel is requested, rather than canceling before it starts.
+    """
+
+    def __init__(self) -> None:
+        self.saw_progress: bool = False
+
+    def on_progress(self, _update: TranscodeProgress) -> None:
+        self.saw_progress = True
+
+    def cancel_check(self) -> bool:
+        return self.saw_progress
+
+
+@requires_svtav1
+def test_a_canceled_transcode_raises_and_leaves_no_output(
+    slow_reencode_source: Path, tmp_path: Path
+) -> None:
+    # A cancel token that trips mid-encode stops the child and raises a
+    # TranscodeError that names the run canceled, not failed. The temporary
+    # output is cleaned up on the raise, so nothing is left behind.
+    facts = probe_media(slow_reencode_source)
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    canceler = _CancelAfterFirstProgress()
+    with pytest.raises(TranscodeError, match="canceled"):
+        _ = run_transcode(
+            slow_reencode_source,
+            tmp_path / "out.mp4",
+            "analysis",
+            facts,
+            verdict,
+            profile=CHROME_149,
+            thresholds=DEFAULT_THRESHOLDS,
+            encoding=ANALYSIS_ENCODING,
+            on_progress=canceler.on_progress,
+            cancel_check=canceler.cancel_check,
+        )
+    assert list(tmp_path.iterdir()) == []
