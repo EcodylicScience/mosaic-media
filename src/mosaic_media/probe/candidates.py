@@ -16,6 +16,10 @@ VIDEO_EXTENSIONS: frozenset[str] = frozenset(
         ".mpg",
         ".mpeg",
         ".wmv",
+        # A raw H.264 elementary stream: no container, no timestamps. Probed
+        # with timing_measured=False and routed to a timestamp-generating
+        # remux by the analysis verdict.
+        ".h264",
     }
 )
 

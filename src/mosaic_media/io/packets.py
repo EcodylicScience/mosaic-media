@@ -38,10 +38,12 @@ def scan_packets_in_process(
         if time_base is None:
             message = f"video stream in {path} has no time base for seeking"
             raise MediaProbeError(message)
+        saw_payload = False
         for packet in container.demux(stream):
             if packet.size == 0:
                 # The demuxer's trailing flush packet: pts None, size 0.
                 continue
+            saw_payload = True
             keyframe = bool(packet.is_keyframe)
             position = int(packet.pos) if packet.pos is not None else -1
             size = int(packet.size)
@@ -60,5 +62,18 @@ def scan_packets_in_process(
     if pts_packets:
         source: TimestampSource = "pts"
         return tuple(pts_packets), source
+    if dts_packets:
+        source = "dts"
+        return tuple(dts_packets), source
+    if saw_payload:
+        # A raw elementary stream: packets exist but none carries a timestamp,
+        # so no seek index can be built. Refusing loudly beats the alternative
+        # of a reader that silently reports zero frames.
+        message = (
+            f"no packet timestamps in {path}: a raw elementary stream has no "
+            "seek index; read it sequentially with facts= injected, or remux "
+            "it into a container first"
+        )
+        raise MediaProbeError(message)
     source = "dts"
     return tuple(dts_packets), source

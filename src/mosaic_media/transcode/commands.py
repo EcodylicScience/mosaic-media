@@ -206,9 +206,13 @@ def _reencode_argv(
         argv.extend(["-vf", chain])
     # Constant frame rate at the measured average resamples a variable source.
     # Rotation is baked by ffmpeg's default autorotation on re-encode, which also
-    # clears the display-matrix side data; no explicit transpose is needed.
-    fps = f"{facts.fps:.6f}"
-    argv.extend(["-r", fps, "-fps_mode", "cfr"])
+    # clears the display-matrix side data; no explicit transpose is needed. An
+    # unmeasured rate (a raw elementary stream) falls back to the header's
+    # declared rate; with neither, the resample is omitted and the muxer keeps
+    # the input timing.
+    fps_value = facts.fps if facts.fps > 0.0 else facts.declared_fps
+    if fps_value > 0.0:
+        argv.extend(["-r", f"{fps_value:.6f}", "-fps_mode", "cfr"])
     argv.extend(_encoder_args(encoding, allow_hardware=allow_hardware))
     argv.extend(["-pix_fmt", encoding.pixel_format])
     if encoding.keyframe_interval is not None:

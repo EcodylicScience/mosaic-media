@@ -30,6 +30,10 @@ def moov_at_start(path: Path) -> bool | None:
                 size = struct.unpack(">I", header[:4])[0]
                 box_type = header[4:8].decode("latin-1")
                 order.append(box_type)
+                if order[0] != "ftyp":
+                    # Not ISOBMFF (the verdict below requires ftyp first), so
+                    # stop before garbage bytes get interpreted as box sizes.
+                    break
                 if size == _LARGE_SIZE_MARKER:
                     extended = handle.read(8)
                     if len(extended) < 8:
@@ -45,7 +49,10 @@ def moov_at_start(path: Path) -> bool | None:
                 if payload < 0:
                     break
                 _ = handle.seek(payload, 1)
-    except OSError:
+    except (OSError, ValueError):
+        # A non-ISOBMFF byte stream parsed as box sizes can demand a relative
+        # seek beyond the platform offset range, which raises ValueError.
+        # Either error means the same thing here: this is not ISOBMFF.
         return None
 
     if not order or order[0] != "ftyp" or "moov" not in order:

@@ -64,7 +64,10 @@ def derive(
         stream.add("unsupported_container")
     if facts.codec_name not in profile.codecs:
         stream.add("unsupported_codec")
-    if not facts.constant_frame_rate:
+    if facts.timing_measured and not facts.constant_frame_rate:
+        # Variable frame rate is a measured claim; an unmeasured stream must
+        # not fire it, or a raw elementary stream would be re-encoded when a
+        # timestamp-generating remux is the fix.
         stream.add("variable_frame_rate")
         analysis.add("variable_frame_rate")
     if facts.rotation_degrees != 0:
@@ -101,6 +104,10 @@ def derive(
     # Truncation and a lying header look identical in the frame count. Only a
     # whole file's header can be said to lie about it.
     if not truncated and _timing_metadata_lies(facts):
+        analysis.add("unreliable_timing_metadata")
+    if not facts.timing_measured:
+        # No timestamps at all: fps, duration, and the frame-to-time mapping
+        # are undefined until a remux generates real ones.
         analysis.add("unreliable_timing_metadata")
 
     stream_reasons = frozenset(stream)

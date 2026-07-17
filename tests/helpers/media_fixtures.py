@@ -98,6 +98,23 @@ def clips(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
         "aac",
         source=["-f", "lavfi", "-i", "sine=frequency=440:duration=2"],
     )
+    # A raw H.264 elementary stream: no container, no packet timestamps. 60
+    # frames at a nominal 30 fps; -bf 0 keeps a later -c copy remux free of
+    # B-frame reordering trouble, matching how tracking boxes record.
+    made["raw_h264"] = build(
+        root / "raw.h264",
+        "-c:v",
+        "libx264",
+        "-bf",
+        "0",
+        "-pix_fmt",
+        "yuv420p",
+        "-g",
+        "12",
+        "-f",
+        "h264",
+        source=["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=2"],
+    )
     return made
 
 

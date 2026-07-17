@@ -18,9 +18,28 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
     decides `constant_frame_rate`. Every other threshold is applied in `derive`.
     """
     header = read_header(path)
-    packets, _source = scan_packets(path, header.video_position)
-    timing = measure_timing(packets, thresholds.drift_frame_periods)
+    packets, source = scan_packets(path, header.video_position)
     gop = measure_gop(packets)
+    if source == "none":
+        # A raw elementary stream carries no timestamps: there is nothing to
+        # fit a grid over. The packet count is still a real frame count (one
+        # access unit per frame); fps and duration are unmeasurable and stay
+        # 0.0. The verdict routes such a file to a timestamp-generating remux
+        # through unreliable_timing_metadata.
+        duration = 0.0
+        fps = 0.0
+        frame_count = len(packets)
+        constant_frame_rate = False
+        max_instantaneous_fps: float | None = None
+        timing_measured = False
+    else:
+        timing = measure_timing(packets, thresholds.drift_frame_periods)
+        duration = timing.duration
+        fps = timing.fps
+        frame_count = timing.frame_count
+        constant_frame_rate = timing.constant_frame_rate
+        max_instantaneous_fps = timing.max_instantaneous_fps
+        timing_measured = True
 
     return MediaFacts(
         container=header.container,
@@ -36,16 +55,17 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
         progressive=header.progressive,
         has_audio=header.has_audio,
         video_stream_count=header.video_stream_count,
-        duration=timing.duration,
-        fps=timing.fps,
-        frame_count=timing.frame_count,
+        duration=duration,
+        fps=fps,
+        frame_count=frame_count,
         start_time=header.start_time,
-        constant_frame_rate=timing.constant_frame_rate,
-        max_instantaneous_fps=timing.max_instantaneous_fps,
+        constant_frame_rate=constant_frame_rate,
+        max_instantaneous_fps=max_instantaneous_fps,
         declared_duration=header.declared_duration,
         declared_fps=header.declared_fps,
         declared_frame_count=header.declared_frame_count,
         moov_at_start=moov_at_start(path),
         max_keyframe_interval_frames=gop.max_keyframe_interval_frames,
         max_gop_bytes=gop.max_gop_bytes,
+        timing_measured=timing_measured,
     )

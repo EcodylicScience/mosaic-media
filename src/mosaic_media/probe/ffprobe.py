@@ -15,7 +15,7 @@ from .errors import MediaProbeError
 HEADER_TIMEOUT_SECONDS = 60
 SCAN_TIMEOUT_SECONDS = 900
 
-TimestampSource = Literal["pts", "dts"]
+TimestampSource = Literal["pts", "dts", "none"]
 
 _ABSENT = ("", "N/A")
 
@@ -232,6 +232,13 @@ def scan_packets(
     every packet, which is what AVI commonly does. Without the fallback an
     unmeasurable file is misread as a variable-rate one.
 
+    A stream where every packet lacks both timestamps -- a raw elementary
+    stream such as a bare `.h264` file -- returns its packets with source
+    `"none"`: the sizes, keyframe flags, and byte offsets are real, but `time`
+    is a 0.0 placeholder that no timing or seeking consumer may read.
+    `probe_media` skips the grid fit for such a stream and marks the facts
+    `timing_measured=False`; the io packet scan refuses the file instead.
+
     Parsing the comma-separated rows is the costliest part of this module: on a
     file of 286256 packets it takes 281 ms, roughly three times the grid fit that
     consumes its output, and most of it goes into building one frozen instance
@@ -256,6 +263,7 @@ def scan_packets(
 
     pts_packets: list[Packet] = []
     dts_packets: list[Packet] = []
+    untimed_packets: list[Packet] = []
     for line in raw.splitlines():
         # ffprobe emits the requested entries in its own natural order:
         # pts_time, dts_time, size, pos, flags. Byte offset (pos) is N/A on
@@ -278,10 +286,16 @@ def scan_packets(
             dts_packets.append(
                 Packet(time=float(columns[1]), size=size, keyframe=keyframe, pos=pos)
             )
+        if columns[0] in _ABSENT and columns[1] in _ABSENT:
+            untimed_packets.append(
+                Packet(time=0.0, size=size, keyframe=keyframe, pos=pos)
+            )
 
     if pts_packets:
         return tuple(pts_packets), "pts"
     if dts_packets:
         return tuple(dts_packets), "dts"
-    message = f"no packet timestamps in {path}"
+    if untimed_packets:
+        return tuple(untimed_packets), "none"
+    message = f"no packets in the video stream of {path}"
     raise MediaProbeError(message)

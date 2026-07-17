@@ -10,6 +10,13 @@ class MediaFacts:
     `declared_*` are the header's claims, retained only to be compared against
     measurement. `declared_fps` is `avg_frame_rate`, which is what OpenCV reads;
     `r_frame_rate` is neither the average nor an upper bound and is not stored.
+
+    `timing_measured` is False for a stream whose packets carry no timestamps
+    at all (a raw elementary stream such as a bare `.h264` file). Then `fps`
+    and `duration` read 0.0 and `constant_frame_rate` reads False as
+    placeholders, not measurements; `frame_count` is still real (the packet
+    count). It defaults True so facts persisted before the field existed
+    round-trip unchanged.
     """
 
     container: str
@@ -37,3 +44,4 @@ class MediaFacts:
     moov_at_start: bool | None
     max_keyframe_interval_frames: int
     max_gop_bytes: int
+    timing_measured: bool = True
