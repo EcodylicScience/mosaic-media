@@ -4,11 +4,14 @@ The reader decodes in an open av container: sequential reads decode forward;
 a seek resolves the target's preceding keyframe from the packet index, calls
 container.seek to that keyframe's presentation timestamp with backward
 resolution, verifies the decoded landing matches that keyframe, then counts
-frames forward to the target, landing frame-exact. That removes OpenCV's
-off-by-N CAP_PROP_POS_FRAMES class
-of bugs by construction, and the codec table is a tested invariant (the codec
-guard), not a trusted bundled binary. Rotation is applied in process through a
-libav transpose filter graph, bit-exact against system-ffmpeg autorotation.
+frames forward to the target, landing frame-exact -- there is no average-rate
+index-to-timestamp conversion to land off target the way OpenCV's
+CAP_PROP_POS_FRAMES does on variable-rate files (pinned by the seek suites,
+including the variable-rate one). The codec table is a tested invariant (the
+codec guard), not a trusted bundled binary. Rotation is applied in process
+through a libav filter graph (a transpose for the quarter-turns, hflip plus
+vflip for 180), golden-verified bit-exact against system-ffmpeg autorotation
+for every mapped rotation.
 """
 
 from collections.abc import Iterator, Sequence
@@ -33,13 +36,17 @@ from .packets import scan_packets_in_process
 # positioned: decoding forward from an explicit seek target.
 _ReaderMode = Literal["idle", "sequential", "positioned"]
 
-# Transpose direction per display rotation. 90 (cclock) is corpus-verified
-# bit-exact against system-ffmpeg autorotation; the other quarter-turns use the
-# analogous transpose, covered by the framemd5 suite when a fixture of that
-# rotation exists. A 180-degree rotation composes two transposes or vflip+hflip;
-# add it here when a 180 fixture lands. A rotation this mapping does not cover
-# raises a clear MediaProbeError rather than emitting a wrong orientation.
-_TRANSPOSE_BY_ROTATION: dict[int, str] = {90: "cclock", 270: "clock"}
+# Filter chain per display rotation, each entry a (filter name, argument)
+# pair. The quarter-turns are single transposes; 180 composes hflip and vflip,
+# matching ffmpeg autorotation's own 180 path. All three are exact pixel
+# permutations, golden-verified bit-exact against system-ffmpeg autorotation
+# by the rotation suite. A rotation this mapping does not cover raises a clear
+# MediaProbeError rather than emitting a wrong orientation.
+_ROTATION_FILTERS: dict[int, tuple[tuple[str, str | None], ...]] = {
+    90: (("transpose", "cclock"),),
+    180: (("hflip", None), ("vflip", None)),
+    270: (("transpose", "clock"),),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,10 +183,7 @@ class VideoReader:
             rotation_degrees = self._probe_rotation()
         self._rotation_degrees = int(rotation_degrees)
         normalized_rotation = self._rotation_degrees % 360
-        if (
-            normalized_rotation != 0
-            and normalized_rotation not in _TRANSPOSE_BY_ROTATION
-        ):
+        if normalized_rotation != 0 and normalized_rotation not in _ROTATION_FILTERS:
             message = f"unsupported rotation {self._rotation_degrees} for {self._path}"
             raise MediaProbeError(message)
         if self._resize is not None:
@@ -261,13 +265,15 @@ class VideoReader:
         if stream is None:
             message = f"cannot build the rotation graph before opening {self._path}"
             raise MediaProbeError(message)
-        direction = _TRANSPOSE_BY_ROTATION[self._rotation_degrees % 360]
         graph = Graph()
         buffer = graph.add_buffer(template=stream)
-        transpose = graph.add("transpose", direction)
+        previous = buffer
+        for name, argument in _ROTATION_FILTERS[self._rotation_degrees % 360]:
+            node = graph.add(name) if argument is None else graph.add(name, argument)
+            previous.link_to(node)
+            previous = node
         sink = graph.add("buffersink")
-        buffer.link_to(transpose)
-        transpose.link_to(sink)
+        previous.link_to(sink)
         graph.configure()
         self._rotation_graph = graph
         return graph
