@@ -10,6 +10,6 @@ tracked file: `git show <hash>:docs/plans/<file>.md` retrieves it.
 | --- | --- | --- | --- |
 | `2026-07-16-scaffold-and-probe-extraction.md` | implemented | 3f4eee2 | Package scaffolding (uv, pyproject, guards) and verbatim probe duplication from mosaic_api, with the sequence.py split, thumbnail subpackage, and hwaccel module. |
 | `2026-07-16-frame-reader-io.md` | implemented | 6efb5ea | The io subpackage: packet byte offsets, seek index, VideoReader with frame-exact seeking, MultiVideoReader, video writer, and correctness suites. |
-| `2026-07-16-perf-regression-gate.md` | active | - | Benchmark harness and the seven consumer-workload regression gates against OpenCV, plus the non-gating probe-cost and cold-seek reports. |
+| `2026-07-16-perf-regression-gate.md` | implemented | 7704151 | Benchmark harness and the seven consumer-workload regression gates against OpenCV, plus the non-gating probe-cost and cold-seek reports. |
 | `2026-07-16-transcode-and-cli.md` | implemented | fa3b4d2 | Verdict-to-command construction, the converter with re-probe acceptance and caller-owned output destinations, and the typer CLI. |
 | `2026-07-17-pyav-io-adoption.md` | implemented | 5e65eb0 | Rewrite the io layer to decode and encode in process through PyAV, replacing the subprocess pipe the performance gate measured as too slow: codec guard, in-process packet scan with presentation-timestamp deduplication, reader and writer rewrites, the layering guards for the av dependency, and the gate-branch threshold fold-in. |
