@@ -59,6 +59,49 @@ def generate_video(
         )
 
 
+def generate_vfr_video(
+    path: Path,
+    *,
+    frames: int,
+    fps: float,
+    slow_fps: float,
+    slow_range: tuple[int, int],
+    gop: int,
+    size: tuple[int, int] = (320, 240),
+) -> Path:
+    """Generate a genuinely variable-rate clip: `fps` everywhere except the
+    half-open frame index window `slow_range`, which runs at `slow_fps` -- the
+    shape of a recorder dropping frames while the machine is busy. Built by
+    re-timestamping a constant-rate clip with a setpts expression and
+    re-encoding with vfr frame passthrough, so the container carries the
+    irregular presentation timestamps."""
+    slow_start, slow_end = slow_range
+    slow_offset = slow_start / fps
+    resume_offset = slow_offset + (slow_end - slow_start) / slow_fps
+    expr = (
+        f"if(lt(N,{slow_start}),N/{fps}/TB,"
+        f"if(lt(N,{slow_end}),({slow_offset}+(N-{slow_start})/{slow_fps})/TB,"
+        f"({resume_offset}+(N-{slow_end})/{fps})/TB))"
+    )
+    with tempfile.TemporaryDirectory() as work:
+        uniform = Path(work) / "uniform.mp4"
+        _ = generate_video(uniform, frames=frames, fps=fps, gop=gop, size=size)
+        return build(
+            path,
+            "-vf",
+            f"setpts='{expr}'",
+            "-fps_mode",
+            "vfr",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            str(gop),
+            source=["-i", str(uniform)],
+        )
+
+
 def decode_md5s(path: Path, *, grayscale: bool = False) -> list[str]:
     """Per-frame md5 of the decoded frame, in presentation order, in the same
     pixel format the reader yields (bgr24, or gray when grayscale=True). Each
