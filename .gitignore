@@ -7,7 +7,6 @@ wheels/
 *.egg-info
 .pytest_cache/
 .ruff_cache/
-.adversarial-council/
 
 # Virtual environments
 .venv
