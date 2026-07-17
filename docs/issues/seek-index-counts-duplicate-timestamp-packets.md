@@ -51,8 +51,8 @@ is `tuple(sorted({packet.time ...}))` and a distinct timestamp is a keyframe
 timestamp when any packet bearing it is keyframe-flagged -- so
 `SeekIndex.frame_count` equals `MediaFacts.frame_count` by construction, the
 same distinct-timestamp count `measure_timing` uses. Under the in-process
-PTS-exact seek the reader compares decoded frame timestamps against the
-target, so packet identity is non-load-bearing: only the
+seek the reader verifies the decoded keyframe landing and counts frames
+forward to the target, so packet identity is non-load-bearing: only the
 frame-index-to-distinct-timestamp map matters, and the deduplication is
 exactly that map. A preceding duplicate can no longer shift a keyframe's
 rank.

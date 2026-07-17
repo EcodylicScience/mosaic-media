@@ -3,8 +3,9 @@
 The reader decodes in an open av container: sequential reads decode forward;
 a seek resolves the target's preceding keyframe from the packet index, calls
 container.seek to that keyframe's presentation timestamp with backward
-resolution, and decodes forward until the target frame's timestamp is reached,
-landing frame-exact. That removes OpenCV's off-by-N CAP_PROP_POS_FRAMES class
+resolution, verifies the decoded landing matches that keyframe, then counts
+frames forward to the target, landing frame-exact. That removes OpenCV's
+off-by-N CAP_PROP_POS_FRAMES class
 of bugs by construction, and the codec table is a tested invariant (the codec
 guard), not a trusted bundled binary. Rotation is applied in process through a
 libav transpose filter graph, bit-exact against system-ffmpeg autorotation.
@@ -99,6 +100,9 @@ class VideoReader:
         self._geometry: _Geometry | None = None
         self._stream: VideoStream | None = None
         self._decode_iterator: Iterator[VideoFrame] | None = None
+        # The first frame after a seek, decoded eagerly to verify the landing and
+        # then held so _read_current returns it rather than a second decode.
+        self._pending_frame: VideoFrame | None = None
         self._rotation_degrees: int = 0
         self._rotation_graph: Graph | None = None
         self._mode: _ReaderMode = "idle"
@@ -236,6 +240,10 @@ class VideoReader:
         or None at a clean end of stream. A truncated or otherwise undecodable
         file raises FFmpegError here, which maps to MediaProbeError -- preserving
         the subprocess reader's truncated-file semantics."""
+        pending = self._pending_frame
+        if pending is not None:
+            self._pending_frame = None
+            return pending
         iterator = self._decode_iterator
         if iterator is None:
             return None
@@ -312,6 +320,7 @@ class VideoReader:
         )
         if reusable:
             return
+        geometry = self._ensure_ready()
         container, stream = self._ensure_container()
         offset = self._to_stream_offset(stream, keyframe_time)
         try:
@@ -321,6 +330,22 @@ class VideoReader:
             raise MediaProbeError(message) from exc
         self._decode_iterator = container.decode(stream)
         self._decoder_pos = keyframe_index
+        self._pending_frame = None
+        # A backward seek to the keyframe's own timestamp must land on that
+        # keyframe. Decode it eagerly and verify its presentation time before
+        # trusting the arithmetic frame count that discards forward to the
+        # target; landing on a different keyframe would silently return the
+        # wrong frame. The decoded keyframe is held for _read_current.
+        first = self._decode_next()
+        if first is not None:
+            observed = float(first.time)
+            if geometry.fps > 0 and abs(observed - keyframe_time) > 0.5 / geometry.fps:
+                message = (
+                    f"seek landing for {self._path} at frame {target}: expected "
+                    f"keyframe time {keyframe_time} but decoded {observed}"
+                )
+                raise MediaProbeError(message)
+            self._pending_frame = first
 
     def _read_current(self, geometry: _Geometry) -> numpy.ndarray | None:
         """Decode forward to `self._target` and return that frame, advancing the

@@ -149,10 +149,10 @@ through a subprocess pipe of the kind moviepy's `FFMPEG_VideoReader` (MIT) and
 imageio-ffmpeg (BSD-2) both use -- see the spec's "In-process decode supersedes
 the subprocess pipe for io" for the gate evidence behind that choice. It
 improves on OpenCV's seeking by using the exact packet index rather than
-timestamp guesswork: a seek moves the container to the target frame's
-presentation timestamp with backward keyframe resolution, then decodes forward
-comparing frame timestamps against the index, landing frame-exact. That is the
-structural fix for OpenCV's off-by-N seeking.
+timestamp guesswork: a seek moves the container to the target's preceding
+keyframe presentation timestamp with backward resolution, verifies the decoded
+landing matches that keyframe, then counts frames forward to the target, landing
+frame-exact. That is the structural fix for OpenCV's off-by-N seeking.
 
 
 ## The OpenCV decode problem

@@ -583,11 +583,11 @@ revised mechanism.
   select` also decoded every frame; only the drop point moves). `resize`
   produces exactly the requested dimensions after rotation.
 - **Seeking.** `container.seek` to the presentation timestamp of the target's
-  preceding keyframe (backward keyframe resolution), then decode forward
-  comparing frame timestamps until the target is reached; the open decode
-  position is reused when it already lies between that keyframe and the target.
-  Frame-exact by construction; OpenCV's `CAP_PROP_POS_FRAMES` off-by-N class of
-  bugs is structurally impossible.
+  preceding keyframe (backward keyframe resolution), verify the decoded landing
+  matches that keyframe's timestamp, then count frames forward to the target;
+  the open decode position is reused when it already lies between that keyframe
+  and the target. Frame-exact by construction; OpenCV's `CAP_PROP_POS_FRAMES`
+  off-by-N class of bugs is structurally impossible.
 - **Sparse batch.** `read_frames(sorted_indices)`: group targets by GOP via the
   packet index, one decode pass per group. Beats OpenCV's per-seek re-decode
   whenever two targets share a GOP; OpenCV re-decodes the chain from the
