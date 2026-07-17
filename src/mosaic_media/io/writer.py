@@ -150,10 +150,15 @@ class FFmpegVideoWriter:
         self._container = None
         if container is None:
             return
+        # Close the container even when the encoder flush raises, so a failed
+        # finalize does not leak the output file handle. The mapping still
+        # surfaces a flush or close FFmpegError as MediaProbeError.
         try:
-            for packet in self._stream.encode(None):
-                container.mux(packet)
-            container.close()
+            try:
+                for packet in self._stream.encode(None):
+                    container.mux(packet)
+            finally:
+                container.close()
         except av.error.FFmpegError as exc:
             message = f"failed to finalize {self._output_path}: {exc}"
             raise MediaProbeError(message) from exc

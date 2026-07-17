@@ -13,6 +13,7 @@ ffprobe reports as absent.
 from pathlib import Path
 
 import av
+import av.error
 
 from ..probe.errors import MediaProbeError
 from ..probe.ffprobe import Packet, TimestampSource
@@ -23,7 +24,15 @@ def scan_packets_in_process(
 ) -> tuple[tuple[Packet, ...], TimestampSource]:
     pts_packets: list[Packet] = []
     dts_packets: list[Packet] = []
-    with av.open(str(path)) as container:
+    try:
+        container = av.open(str(path))
+    except av.error.FFmpegError as exc:
+        message = f"failed to open {path}: {exc}"
+        raise MediaProbeError(message) from exc
+    with container:
+        if not container.streams.video:
+            message = f"no video stream in {path}"
+            raise MediaProbeError(message)
         stream = container.streams.video[0]
         time_base = stream.time_base
         if time_base is None:

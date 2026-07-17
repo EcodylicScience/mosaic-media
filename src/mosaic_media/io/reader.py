@@ -118,6 +118,10 @@ class VideoReader:
         except av.error.FFmpegError as exc:
             message = f"failed to open {self._path}: {exc}"
             raise MediaProbeError(message) from exc
+        if not container.streams.video:
+            container.close()
+            message = f"no video stream in {self._path}"
+            raise MediaProbeError(message)
         stream = container.streams.video[0]
         stream.thread_type = "AUTO"  # frame threading; the decode loop drains on EOF
         self._container = container
@@ -128,10 +132,14 @@ class VideoReader:
         # The av stream exposes no rotation getter before decode, so open a
         # short-lived container, read the first frame's rotation, and close it,
         # leaving the reader's own decode position untouched.
-        with av.open(str(self._path)) as container:
-            stream = container.streams.video[0]
-            for frame in container.decode(stream):
-                return int(frame.rotation)
+        try:
+            with av.open(str(self._path)) as container:
+                stream = container.streams.video[0]
+                for frame in container.decode(stream):
+                    return int(frame.rotation)
+        except av.error.FFmpegError as exc:
+            message = f"failed to decode {self._path}: {exc}"
+            raise MediaProbeError(message) from exc
         return 0
 
     # --- Metadata resolution ---
