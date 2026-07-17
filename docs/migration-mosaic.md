@@ -6,8 +6,12 @@ read, probe, or write video, suggests which `mosaic_media` API could replace
 each one, lists the OpenCV uses that stay, and proposes a migration order with
 verification steps.
 
-File and line references were surveyed at mosaic commit `8dfaed6` against
-mosaic-media commit `e4226b7`. Line numbers drift; the symbol names do not.
+Mosaic file and line references were surveyed at mosaic commit `8dfaed6`;
+the mosaic-media API this guide describes reflects mosaic-media `41b4597`
+(which includes, beyond the survey-time `e4226b7`: the `MultiVideoReader`
+`facts=` / `indices=` injection seams and segment reuse, raw `.h264` support,
+the 180-degree rotation mapping, and the core-only console-script facade).
+Line numbers drift; the symbol names do not.
 The guide is a map and a suggested order, not a prescription -- it comes from
 a survey of code its readers know better than the surveyor, so where it
 disagrees with the code, the code wins; please correct the guide.
