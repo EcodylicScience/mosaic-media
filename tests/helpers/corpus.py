@@ -99,3 +99,44 @@ def decode_md5s(path: Path, *, grayscale: bool = False) -> list[str]:
 def frame_md5(frame: numpy.ndarray) -> str:
     """md5 of a numpy frame's C-contiguous bytes, matching decode_md5s digests."""
     return hashlib.md5(frame.tobytes()).hexdigest()
+
+
+def scaled_frames(
+    path: Path, width: int, height: int, *, grayscale: bool = False
+) -> list[numpy.ndarray]:
+    """Per-frame ground truth for the reader's resize path: system ffmpeg's
+    `-vf scale=width:height` output, in presentation order, in the reader's
+    output pixel format (bgr24, or gray when grayscale=True). ffmpeg's scale
+    default is bicubic, so this is the reference the reader's bicubic resize is
+    checked against. Returned as raw pixel arrays -- not md5 digests -- because
+    the bundled-versus-system swscale skew forces a tolerance comparison on the
+    color path, which needs the pixels."""
+    pixel_format = "gray" if grayscale else "bgr24"
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-v",
+            "error",
+            "-i",
+            str(path),
+            "-vf",
+            f"scale={width}:{height}",
+            "-pix_fmt",
+            pixel_format,
+            "-f",
+            "rawvideo",
+            "-",
+        ],
+        capture_output=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        message = (
+            f"scale ground truth failed for {path}: {result.stderr.decode().strip()}"
+        )
+        raise RuntimeError(message)
+    buffer = numpy.frombuffer(result.stdout, dtype=numpy.uint8)
+    if grayscale:
+        return list(buffer.reshape(-1, height, width))
+    return list(buffer.reshape(-1, height, width, 3))

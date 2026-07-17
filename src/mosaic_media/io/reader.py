@@ -268,10 +268,16 @@ class VideoReader:
             frame = graph.vpull()
         pixel_format = "gray" if self._grayscale else "bgr24"
         if self._resize is not None:
+            # Bicubic matches system ffmpeg's -vf scale default. av's own default
+            # is bilinear; leaving it unset regresses resized frames against the
+            # scale goldens (bilinear drifts ~24 gray levels where bicubic lands
+            # within one). Rotation and format-only reformats do not scale, so
+            # they take no interpolation.
             reformatted = frame.reformat(
                 width=geometry.out_width,
                 height=geometry.out_height,
                 format=pixel_format,
+                interpolation="BICUBIC",
             )
             return reformatted.to_ndarray()
         return frame.to_ndarray(format=pixel_format)
