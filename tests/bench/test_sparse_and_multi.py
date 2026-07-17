@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from mosaic_media import MediaFacts, probe_media
-from tests.bench.harness import Workload, assert_gate, run_workload
+from tests.bench.harness import DEFAULT_ROUNDS, Workload, assert_gate, run_workload
 from tests.bench.support import (
     BENCH_FRAMES,
     CV2_IMPORTORSKIP_REASON,
@@ -31,6 +31,17 @@ pytestmark = pytest.mark.bench
 SPARSE_COUNT = 20
 SPARSE_SEED = 20260716
 JUNCTION_WINDOW = 100
+
+# Thin-margin rule: any gated workload whose stabilization margin over its
+# bound is under 10 percent runs at rounds=9, so the stabilization median
+# recorded here makes a failure diagnosable as regression-versus-noise (see
+# the spec's "Gate policy and thresholds, revised for in-process decode").
+_SORTED_SPARSE_EXTRACTION_ROUNDS: dict[str, int] = {
+    "gop12": DEFAULT_ROUNDS,  # stabilization median 1.660, ample margin
+    "gop250": 9,  # stabilization median 1.063, thin margin
+}
+# Thin-margin rule: stabilization median 1.032, margin under 10 percent.
+_MULTI_VIDEO_JUNCTION_ROUNDS = 9
 
 
 # The cv2 sparse baseline is the shared seek-one-read-one loop cv2_read_targets;
@@ -106,7 +117,9 @@ def test_gate_sorted_sparse_extraction(
         cv2_callable=lambda context: cv2_read_targets(path, context[1]),
         reader_callable=lambda context: _reader_sparse(path, context[0], context[1]),
     )
-    assert_gate(run_workload(workload))
+    assert_gate(
+        run_workload(workload, rounds=_SORTED_SPARSE_EXTRACTION_ROUNDS[corpus_key])
+    )
 
 
 def test_gate_multi_video_junction(bench_corpus: dict[str, Path]) -> None:
@@ -122,4 +135,4 @@ def test_gate_multi_video_junction(bench_corpus: dict[str, Path]) -> None:
             paths, BENCH_FRAMES, JUNCTION_WINDOW
         ),
     )
-    assert_gate(run_workload(workload))
+    assert_gate(run_workload(workload, rounds=_MULTI_VIDEO_JUNCTION_ROUNDS))

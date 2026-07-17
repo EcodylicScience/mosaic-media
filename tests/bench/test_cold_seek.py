@@ -2,13 +2,18 @@
 
 Reported against a documented bound of at most 2x OpenCV; NOT gated at parity.
 No consumer performs isolated random single-frame seeks -- every seek call site
-in the toolkit today is monotonic forward (see the gated seek workloads). The
-~35 ms ffmpeg process-spawn floor makes strict parity with OpenCV's in-process
-seek unreachable on short-GOP files without the rejected packet-feed daemon.
-The spec therefore documents a 2x bound rather than parity: this test prints
-the numbers and FAILS ONLY if the reader exceeds 2x OpenCV, which is a real
-regression signal; being merely slower than OpenCV within the bound is expected
-and passes.
+in the toolkit today is monotonic forward (see the gated seek workloads). A
+shuffled target sequence defeats the reader's discard-forward reuse (see
+support.reader_read_targets): each seek resolves the target's preceding
+keyframe from the packet index and calls container.seek to it, so every
+target pays a fresh keyframe seek plus decode-forward rather than continuing
+an already-open decode position. Under the in-process reader the stabilized
+measurement already sits at parity-or-better against OpenCV (gop12 1.745,
+gop250 1.021 -- see the spec's "Gate policy and thresholds, revised for
+in-process decode"), so the 2x bound is documented headroom, not a
+load-bearing floor: this test prints the numbers and FAILS ONLY if the reader
+exceeds 2x OpenCV, which is a real regression signal; being merely slower than
+OpenCV within the bound is expected and passes.
 """
 
 from __future__ import annotations

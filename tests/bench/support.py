@@ -83,9 +83,12 @@ def reader_read_targets(path: Path, facts: MediaFacts, targets: list[int]) -> in
     """Seek to each target with the reader and read one frame.
 
     The reader counterpart to cv2_read_targets, shared by the monotonic-seek
-    and cold-seek workloads. The reader chooses discard-versus-respawn per seek
-    from the packet index; the workload's target ordering (monotonic forward
-    vs shuffled) decides which path dominates.
+    and cold-seek workloads. The reader resolves each target's preceding
+    keyframe from the packet index, and either continues decoding forward on
+    its already-open container when the target lies ahead within that window,
+    or seeks the container to the keyframe's presentation timestamp and
+    decodes forward from there; the workload's target ordering (monotonic
+    forward vs shuffled) decides which path dominates.
     """
     decoded_count = 0
     with make_reader(path, facts) as reader:

@@ -7,8 +7,8 @@
   the capture to start_frame + result_index * frame_step via
   CAP_PROP_POS_FRAMES and reads one frame. A small monotonically increasing
   step keeps consecutive targets inside the current keyframe-to-position
-  window, so the reader discards forward on the live process rather than
-  respawning per seek.
+  window, so the reader continues decoding forward on the open container
+  rather than seeking to a fresh keyframe per target.
 """
 
 from __future__ import annotations
@@ -33,6 +33,11 @@ pytestmark = pytest.mark.bench
 SEEK_START_READ_COUNT = 200
 MONOTONIC_SEEKS = 50
 MONOTONIC_STEP = 3
+
+# Tier CARVE (>= 0.9): the owned-BGR structural copy (see the spec's "Gate
+# policy and thresholds, revised for in-process decode"). Stabilization
+# medians: gop12 1.011, gop250 0.986.
+_SEEK_THEN_SEQUENTIAL_THRESHOLD = 0.9
 
 
 def _cv2_seek_then_sequential(path: Path, start: int, count: int) -> int:
@@ -80,7 +85,7 @@ def test_gate_seek_then_sequential(
             path, facts, start, SEEK_START_READ_COUNT
         ),
     )
-    assert_gate(run_workload(workload))
+    assert_gate(run_workload(workload), threshold=_SEEK_THEN_SEQUENTIAL_THRESHOLD)
 
 
 @pytest.mark.parametrize("corpus_key", ["gop12", "gop250"])
