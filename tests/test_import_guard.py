@@ -143,24 +143,35 @@ def test_the_io_subpackage_imports_without_cv2() -> None:
 
 
 def test_the_cli_needs_typer_and_the_core_does_not() -> None:
-    # In a fresh subprocess with typer poisoned, a core module still imports but
-    # the cli layer does not -- typer is confined to cli. Running in a subprocess
-    # (not in-process) is what makes this real: an in-process import would find the
-    # modules already cached in sys.modules and prove nothing.
+    # In a fresh subprocess with typer poisoned, a core module and the cli
+    # facade still import -- the facade stays standard library so the console
+    # script can report a missing extra -- but the actual application, whether
+    # imported as a module or resolved through the facade's lazy `app`
+    # attribute, fails: typer is confined to mosaic_media.cli.application.
+    # Running in a subprocess (not in-process) is what makes this real: an
+    # in-process import would find the modules already cached in sys.modules
+    # and prove nothing.
     core = _run_guarded(
         "import mosaic_media.transcode.commands", forbidden_root="typer"
     )
     assert core.returncode == 0, core.stderr
-    cli = _run_guarded("import mosaic_media.cli", forbidden_root="typer")
-    assert cli.returncode != 0
-    assert "typer" in cli.stderr
+    facade = _run_guarded("import mosaic_media.cli", forbidden_root="typer")
+    assert facade.returncode == 0, facade.stderr
+    application = _run_guarded(
+        "import mosaic_media.cli.application", forbidden_root="typer"
+    )
+    assert application.returncode != 0
+    assert "typer" in application.stderr
+    lazy = _run_guarded("from mosaic_media.cli import app", forbidden_root="typer")
+    assert lazy.returncode != 0
+    assert "typer" in lazy.stderr
 
 
 def test_the_cli_imports_without_numpy() -> None:
-    result = _run_guarded("import mosaic_media.cli", forbidden_root="numpy")
+    result = _run_guarded("import mosaic_media.cli.application", forbidden_root="numpy")
     assert result.returncode == 0, result.stderr
 
 
 def test_the_cli_imports_without_av() -> None:
-    result = _run_guarded("import mosaic_media.cli", forbidden_root="av")
+    result = _run_guarded("import mosaic_media.cli.application", forbidden_root="av")
     assert result.returncode == 0, result.stderr
