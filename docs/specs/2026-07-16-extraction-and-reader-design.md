@@ -79,9 +79,13 @@ form, because it justifies everything below:
   behavior, and every disagreement between them is a correctness bug hunt.
 - **Metadata and seeking are wrong in known ways.** OpenCV's property reads
   produce false-positive variable-rate detection and unreliable frame counts
-  (the probe exists to replace them), and `CAP_PROP_POS_FRAMES` seeking is a
-  well-known source of off-by-N frame errors. The packet index makes seeks
-  frame-exact by construction.
+  (the probe exists to replace them), and `CAP_PROP_POS_FRAMES` seeking
+  converts the frame index to a timestamp through one average frame rate, so
+  on variable-rate files it lands off by tens of frames (measured against
+  pixel-content ground truth on opencv-python 5.0.0: 12 of 14 seeks off by
+  -35..+25 frames on a rate-shifted fixture, exact on a constant-rate
+  control; upstream reports span 2015-2025, opencv/opencv issues 4890, 9053,
+  20227, 26827). The packet index makes seeks frame-exact by construction.
 - **Deployment weight.** The transcode runner must start on a machine that
   has ffmpeg and nothing else -- a minimal container, a tracking box. An
   OpenCV wheel is a large binary dependency that buys nothing there.
@@ -101,10 +105,12 @@ OpenCV stays excluded, for both of its defects:
 
 1. **Wheel codec table.** The wheel this stack installs has no AV1 software
    decoder in any configuration (no dav1d, no libaom) and no hardware path, and
-   AV1 is the transcode codec. Unfixable from the code that depends on it.
-2. **Codec-independent API defects.** Off-by-N `CAP_PROP_POS_FRAMES` seeking and
-   unreliable metadata properties persist in every OpenCV build, however linked.
-   The packet index and the probe exist to replace exactly these.
+   AV1 is the transcode codec (the stack's current choice). Unfixable from
+   the code that depends on it.
+2. **Codec-independent API defects.** Off-by-N `CAP_PROP_POS_FRAMES` seeking
+   on variable-rate files and unreliable metadata properties are defects of
+   OpenCV's own capture layer, not of whichever ffmpeg it links. The packet
+   index and the probe exist to replace exactly these.
 
 The `io` layer's in-process decoder -- PyAV (the `av` package, Cython bindings
 over libavformat/libavcodec) -- clears both bars. Its wheel carries a codec
@@ -127,12 +133,13 @@ injected parameters.
 
 ### Seek architecture: subprocess respawn, not a decoder daemon
 
-The reader follows the established subprocess architecture used by moviepy
+The reader followed the established subprocess architecture used by moviepy
 (`FFMPEG_VideoReader`, MIT) and imageio-ffmpeg (BSD-2): one persistent ffmpeg
 process for sequential reads, respawn with `-ss` for discontinuous seeks.
-Both projects are named in the reader docstring and the README so the design
-reads as adopted practice, not untested greenfield. Code adapted from either
-carries an attributing comment and license notice.
+While that architecture shipped, both projects were named in the reader
+docstring; after the in-process revision below they remain cited in the README
+as the architecture not taken. Code adapted from either carries an attributing
+comment and license notice.
 
 A persistent-decoder daemon (feeding repacked packet bytes to a long-lived
 `ffmpeg -f h264 -i pipe:0` process to eliminate respawn cost) was prototyped
@@ -156,10 +163,10 @@ and rejected. Findings from the proof of concept:
   ceiling is plausibly faster (the fixed per-seek tax is the reorder-depth
   flush, ~15-20 ms, versus OpenCV's ~40-50 ms in-process seek overhead), but
   proving it means finishing the risky protocol.
-- No prior art exists. Every surveyed reader either binds the C libraries in
-  process (PyAV, decord, torchvision, OpenCV itself) or uses subprocess
-  respawn (moviepy, imageio-ffmpeg, VidGear). Nobody feeds packets to a
-  decoder daemon over a pipe.
+- None of the surveyed readers ships this architecture. Every one either
+  binds the C libraries in process (PyAV, decord, torchvision, OpenCV itself)
+  or uses subprocess respawn (moviepy, imageio-ffmpeg, VidGear); none feeds
+  packets to a decoder daemon over a pipe.
 
 Decision: drop the daemon entirely. No daemon-ready plumbing. The packet
 index gains a `pos` byte-offset field because it costs one ffprobe token and
@@ -384,6 +391,7 @@ Tier CARVE (`>= 0.9`), owned-BGR structural copy:
 | sequential-full-decode[gop250] | 0.949 | >= 0.9 |
 | seek-then-sequential[gop12] | 1.011 | >= 0.9 |
 | seek-then-sequential[gop250] | 0.986 | >= 0.9 |
+| multi-video-junction-injected[gop12+gop12] | 1.065 | >= 0.9 |
 
 Tier GATE (`>= 1.0`):
 
@@ -420,17 +428,18 @@ Recorded at the threshold site:
   (1.745 / 1.021), where the respawn reader was 0.356 / 0.455. The report keeps
   the `assert_bounded` 2x form; the tightening is in the recorded expectation,
   not a weakened assertion.
-- **Multi-video-junction is a bounded report, not a gate.** The workload
-  deliberately constructs the multi-video reader from scratch inside the
-  timed region, which probes every file (an ffprobe subprocess each) and
-  scans each segment's packets -- costs the consumer path never pays per
-  open, because consumers hold `MediaFacts`. Measured after the in-process
-  adoption: 0.739 from scratch, while a raw two-container decode of the same
-  frames measures 1.032 -- the deficit is open cost, not decode. The report
-  bounds the ratio at `<= 1.5x` slowdown to catch real regressions; whether
-  the multi-video reader should accept injected facts per segment (removing
-  the probe from the open path) is tracked as an open question for the
-  consumer migration in `docs/issues/`.
+- **Multi-video-junction splits into a gated consumer form and a bounded
+  from-scratch report.** The from-scratch form constructs the multi-video
+  reader inside the timed region, which probes every file (an ffprobe
+  subprocess each) and scans each segment's packets -- costs the consumer
+  path never pays per open, because consumers hold `MediaFacts`. Measured
+  after the in-process adoption: 0.739 from scratch, while a raw
+  two-container decode of the same frames measures 1.032 -- the deficit is
+  open cost, not decode; the report bounds it at `<= 1.5x` to catch real
+  regressions. The consumer form injects `facts=` and `indices=` into the
+  constructor (the seam the open-cost issue called for, now shipped) and
+  measures 1.065 -- parity or better, matching the raw-container expectation
+  -- gated in the owned-copy carve tier at `>= 0.9` with `rounds=9`.
 - **Thin-margin workloads run at 9 rounds.** Any gated workload whose
   stabilization margin over its bound is under 10 percent
   (sorted-sparse-extraction[gop250] 1.063, the metadata rows) runs at gate
@@ -596,8 +605,11 @@ revised mechanism.
   preceding keyframe (backward keyframe resolution), verify the decoded landing
   matches that keyframe's timestamp, then count frames forward to the target;
   the open decode position is reused when it already lies between that keyframe
-  and the target. Frame-exact by construction; OpenCV's `CAP_PROP_POS_FRAMES`
-  off-by-N class of bugs is structurally impossible.
+  and the target. Frame-exact by construction and pinned by test on both
+  constant-rate and variable-rate fixtures (`tests/io/test_reader_seek.py`,
+  `tests/io/test_reader_vfr.py`); no average-rate index-to-timestamp
+  conversion exists to reproduce OpenCV's `CAP_PROP_POS_FRAMES` off-by-N
+  landings.
 - **Sparse batch.** `read_frames(sorted_indices)`: group targets by GOP via the
   packet index, one decode pass per group. Beats OpenCV's per-seek re-decode
   whenever two targets share a GOP; OpenCV re-decodes the chain from the
@@ -612,7 +624,8 @@ revised mechanism.
   `cv2.VideoCapture` so consumer migration is mechanical. `to_ndarray` returns a
   writable, C-contiguous, non-aliasing array (numpy `OWNDATA` is false by design
   -- the array wraps the reformatted frame's own buffer -- so the contract is
-  asserted on writability and non-aliasing, not on the flag), framemd5-exact
+  asserted on writability and non-aliasing, not on the flag:
+  `tests/io/test_reader_frame_contract.py`), framemd5-exact
   against system-ffmpeg ground truth despite the bundled-libav major skew.
 - **hwaccel.** `hwaccel=True` is a documented no-op for the in-process reader:
   decode is always software. No consumer requests hardware decode today, and the
@@ -671,8 +684,10 @@ raises, the job is marked failed, and a human sees it. It signals a
 command-construction bug or an input class the corpus never covered -- a
 deterministic condition that re-running the same command cannot fix. Nothing
 in the stack may respond to acceptance failure by scheduling another
-transcode; retries are reserved for transient errors (disk, resources). This
-makes a transcode loop structurally impossible. Confidence that commands
+transcode; retries are reserved for transient errors (disk, resources). The
+converter itself never retries, and the job layer treats the failure as
+terminal -- the no-loop guarantee is that rule, enforced at both layers, not
+a mechanism a caller could not circumvent. Confidence that commands
 produce clean output is established before any job is ever dispatched, by
 the development-time corpus acceptance tests (each reason-to-command mapping
 proven green on representative defect files).
@@ -682,7 +697,7 @@ playback transcode is mandatory on hard stream reasons and a suggestion on
 soft ones.
 
 Sequencing invariant: the transcode must not ship to production before the
-reader lands in consumers, or the stack produces AV1 files its own toolkit
+reader lands in consumers, or the stack produces files its own toolkit
 cannot decode. Inside this effort both are built; the invariant binds the
 later migration effort.
 
@@ -745,9 +760,10 @@ README, and implementation is a bug:
 ## Deferred, recorded so nothing is silently dropped
 
 - **Consumer migration** (`mosaic_api` onto `mosaic_media.probe`, `mosaic`
-  onto the reader and metadata): the next effort; README phase 3 remains its
-  reference. During the window, `mosaic_api/media_probe/` is frozen: fixes
-  land here and are back-ported only if urgent.
+  onto the reader and metadata): the next effort; the migration guides under
+  `docs/` and the README's "Adopting this package" are its references. During
+  the window, `mosaic_api/media_probe/` is frozen: fixes land here and are
+  back-ported only if urgent.
 - **imgstore chunk decode** moves onto `VideoReader` during the `mosaic`
   migration; the descriptor and index layer stays in `mosaic` as is.
 - **Decoder daemon**: rejected; this spec's POC findings are the starting

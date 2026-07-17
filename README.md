@@ -3,432 +3,337 @@
 Media probing, transcode planning, and frame reading for the Ecodylic stack.
 Distribution name `mosaic-media`, import name `mosaic_media`.
 
-This package sits upstream of both `mosaic_api` (the FastAPI backend) and
-`mosaic` (the animal behavior analysis toolkit). Both consume it; it consumes
-neither. It answers two questions about a video file and executes the ffmpeg
+The package answers two questions about a video file and executes the ffmpeg
 work that follows from the answers:
 
 1. Does it play well in a browser, and does it scrub quickly?
 2. Is it usable for per-frame analyses like tracking?
 
-Those are not the same question, and a file can need a transcode for one and
-not the other. The two verdicts are independent by design.
-
-This document doubles as the extraction plan. The code does not live here yet;
-it lives in `mosaic_api/src/mosaic_api/media_probe/` and moves here in the
-phases below.
-
-
-## Position in the stack
+A file can need a transcode for one and not the other, so the two verdicts are
+kept independent.
 
 ```
-mosaic-media          probe, verdict, ffmpeg command construction, reader, CLI
+mosaic-media          probe, verdict, transcode, reader, CLI
     ^          ^
     |          |
 mosaic_api    mosaic
 ```
 
-The edges run one way. `mosaic_media` never imports `mosaic_api` or `mosaic`.
-This is the constraint that makes the CLI composition and the job wiring below
-legal; violating it in either direction reintroduces a cycle.
+`mosaic_api` (the FastAPI backend) and `mosaic` (the animal behavior analysis
+toolkit) both consume this package; it imports neither. The one-way direction
+is what makes the CLI mount and the job wiring legal (see "CLI composition").
+
+Everything described here is implemented, covered by the test suite and a
+performance regression gate. What remains is the consumer migration:
+`mosaic_api` still carries the original copy of the probe code this package
+was extracted from, kept identical until its migration deletes it, and
+`mosaic` still decodes through OpenCV.
 
 
 ## Why this package exists
 
-The probe currently lives in `mosaic_api` because that is where video is
-ingested. Three things pull it lower:
+The probe was written in `mosaic_api`, where video is ingested. Three things
+argued for moving it below both consumers:
 
-- **`mosaic` needs the same measurements.** Its `get_video_metadata` reads
-  width, height, frame rate, and frame count from OpenCV properties and falls
-  back to a one-off ffprobe call for frame rate and a **full decode** to count
-  frames. The packet scan in the probe answers all of it more accurately and
+- `mosaic` needs the same measurements. Its `get_video_metadata` reads OpenCV
+  properties, falls back to a one-off ffprobe call for frame rate, and counts
+  frames by decoding the whole file. The probe's packet scan answers all of it
   without decoding a frame.
-- **The transcode needs the verdict.** The command to run is selected by the
-  reason the file failed, and the reasons live in the verdict. A CLI runner for
-  transcode jobs cannot sit above the API.
-- **The reader needs the packet index.** See "Why the reader comes here too".
+- The transcode runner needs the verdict: the reason a file failed selects the
+  command that fixes it, and a CLI runner for transcode jobs cannot sit above
+  the API.
+- The reader needs the packet index the probe already produces (see "The
+  reader").
 
 
-## What lives here, and what stays behind
+## Adopting this package
 
-The probe subpackage is 17 modules, roughly 1400 lines, and every import in it
-is either standard library (`json`, `struct`, `subprocess`, `dataclasses`,
-`pathlib`, `typing`, `collections`) or package-local. **There are no external
-dependencies and no database imports anywhere in it, including `facts_io.py`.**
+Two migration guides inventory the consumer call sites we found and suggest a
+migration order. They come from a survey of the code at a point in time; line
+numbers drift, symbol names are the stable anchors, and where a guide
+disagrees with the code, the code wins.
 
-This has a practical consequence for anyone executing the extraction: *the
-boundary is semantic, not mechanical*. Grepping for database imports to decide
-what to leave behind finds nothing, because `facts_io.py` was deliberately
-written against a structural `Protocol` so the package never imports the ORM
-models. It stays behind because `FACT_FIELDS` names `mosaic_api`'s persistence
-columns -- it encodes the backend's schema vocabulary -- not because it touches
-a database.
+- `docs/migration-mosaic-api.md` -- the backend. Mostly closing the
+  duplication window: delete the internal `media_probe/` copy and rewire its
+  consumers onto this package. `mosaic_api` reads no frames server-side, so
+  the core alone is enough -- no extras.
+- `docs/migration-mosaic.md` -- the toolkit. The larger surface: metadata
+  probing, sequential and random-access decode, multi-video sequences, video
+  writing, capability probes, and the CLI mount, with an explicit list of the
+  codec-free OpenCV image operations that stay.
 
-The upside of the same fact: the extraction requires no import untangling and
-no dependency surgery. All the difficulty is in deciding which concepts are
-media-domain and which are API-domain.
+Wiring is an editable path dependency, following the `mosaic-behavior`
+precedent already in `mosaic_api`:
 
-### Extraction inventory
+```toml
+[project]
+dependencies = [
+    "mosaic-media",           # mosaic_api: core only
+    # "mosaic-media[io,cli]"  # mosaic: reader, writer, CLI mount
+]
 
-| Module | Destination | Reason |
-| --- | --- | --- |
-| `errors.py` | `mosaic-media` | Media-domain error type. |
-| `ffprobe.py` | `mosaic-media` | Header read and packet scan. The foundation. |
-| `timing.py` | `mosaic-media` | Grid fit over packet timestamps. |
-| `gop.py` | `mosaic-media` | Seek cost in bytes and frames. |
-| `boxes.py` | `mosaic-media` | ISOBMFF `moov` placement. |
-| `facts.py` | `mosaic-media` | `MediaFacts`, the measurement result. |
-| `probe.py` | `mosaic-media` | Composes the above into one scan. |
-| `candidates.py` | `mosaic-media` | Video extension set. |
-| `policy.py` | `mosaic-media` | Already designed for this: "Injected policy. The package encodes no opinion about any one browser." The `PlaybackProfile` and `Thresholds` types are media-domain; the choice to apply a given profile stays with the caller. |
-| `verdict.py` | `mosaic-media` | The transcode CLI needs it to select commands. |
-| `downscale.py` | `mosaic-media` | Runs ffmpeg to produce a derivative -- the same family as the transcode converter. Also overlaps `mosaic`'s existing `save_frames_as_png`. |
-| `thumbnail.py` | `mosaic-media` | Same. |
-| `media_types.py` | stays in `mosaic_api` | Keyed on ffprobe `format_name`, but its output is an HTTP `Content-Type` and its purpose is downloads, caching intermediaries, and `<source type>` selection. A transcode CLI has no use for it. |
-| `facts_io.py` | stays in `mosaic_api` | Names the backend's persistence columns. |
-| `sequence.py` | **split** | `uniform_properties`, `canonical_fps`, and the `VideoProperties` protocol move here -- `MultiVideoReader` reads N videos as one stream and wants exactly that uniformity check. `duplicate_stems` stays in `mosaic_api`: it exists for thumbnail and pose sidecar path injectivity, which is backend storage layout. |
+[tool.uv.sources]
+mosaic-media = { path = "../mosaic_media", editable = true }
+```
 
-Do not move `sequence.py` whole in either direction. It is the one module that
-is internally mixed.
+An editable path beats released versions while `MediaFacts` is still growing
+fields: every added measurement touches `facts.py` here and `FACT_FIELDS` in
+`mosaic_api` as one logical change across two repositories, and a
+release-and-bump cycle would be paid on every field.
+
+Migrating `mosaic_api` first is the easier order -- its rewire is mechanical
+and behavior-identical -- but nothing breaks if the toolkit goes first. One
+constraint holds regardless of order: the transcode must not run against
+production datasets before the toolkit can decode the transcode codec
+(currently AV1; the reader migration provides that), or the stack produces
+files its own toolkit cannot read.
+
+What changes for consumers is small, and loud rather than silent: errors raise
+(`MediaProbeError`, `TranscodeError`) instead of returning sentinel values,
+frame counts are measured from packet timestamps rather than declared by
+headers, and the ingestion probe's `MediaFacts` travel forward as the metadata
+authority -- consumers inject them (`VideoReader(path, facts=..., index=...)`,
+`MultiVideoReader(paths, facts=..., indices=...)`) instead of re-measuring.
+The guides list each difference with its call sites.
 
 
 ## Layering and optional dependencies
 
-Three layers, each a heavier dependency set than the last:
-
 | Extra | Adds | Contents |
 | --- | --- | --- |
-| `mosaic-media` | standard library only | Probe, verdict, ffmpeg command construction. |
-| `mosaic-media[io]` | `numpy`, `av` | In-process libav (PyAV) frame reader, seek index, multi-video reader. **No OpenCV.** |
+| `mosaic-media` | standard library only | Probe, verdicts, transcode command construction and converter, thumbnails, capability probing. |
+| `mosaic-media[io]` | `numpy`, `av` | In-process libav (PyAV) frame reader, seek index, multi-video reader, video writer. No OpenCV. |
 | `mosaic-media[cli]` | `typer` | The `mosaic-media` command line app. |
 
-`mosaic_api` imports the core and must not pull in `typer` or `numpy` through
-it. Only `mosaic_media.cli` may import `typer`.
+The core is standard library only so the transcode runner can start on a
+machine that has ffmpeg and nothing else -- a minimal container, or a tracking
+box without the analysis stack. An import test guards this; `mosaic_api`
+depends on the core and pulls neither numpy nor typer through it. numpy would
+do `timing.py`'s grid fit far faster (measured once during development at
+roughly eighty times), but that is under one percent of a probe, and it would
+cost the ffmpeg-only deployment.
 
-The `VideoReader` decodes in process through libav (the `av` package) and needs
-no ffmpeg binary at runtime; its codec table is verified by the codec guard, with
-`av --no-binary av` (building against the system libav) as the fallback for a
-locked-down environment. `MultiVideoReader` still probes each file through the
-probe layer's ffprobe subprocess, so it depends on a system `ffprobe`. The
-probe, the transcode command construction, and the CLI require a system `ffmpeg`
-on `PATH`: version 5.1 or newer for the runtime
-path (`-fps_mode`), and 6.0 or newer to run the test suite
-(`-display_rotation`), which the test corpus generation also depends on.
-
-### The standard-library-only invariant needs a new reason
-
-The probe is standard library only today, and the reason recorded in
-`timing.py` is that this "is what keeps it extractable" -- numpy would do the
-grid fit roughly eighty times faster but buys under one percent of the whole
-probe, so it was never worth the dependency.
-
-**That justification expires the moment this extraction lands.** Once the
-package is extracted, "keeps it extractable" is spent, and the next person to
-read that comment will add numpy to `timing.py`.
-
-The durable reason is the CLI: the transcode runner has to start on a machine
-that has ffmpeg and nothing else -- a minimal container, or a tracking box
-without the analysis stack. Record that reason in the code, and guard the
-invariant with an import test rather than leaving it to convention.
+System requirements: the probe, the transcode, and the CLI shell out to
+`ffmpeg` and `ffprobe` on `PATH` -- version 5.1 or newer at runtime
+(`-fps_mode`), 6.0 or newer for the test suite (`-display_rotation`).
+`VideoReader` decodes in process and needs no ffmpeg binary; its codec table
+is pinned by a codec guard test, and `pip install av --no-binary av` (building
+against the system libav) is the fallback for a locked-down environment.
+`MultiVideoReader` probes each file through ffprobe only when the caller does
+not inject `facts`.
 
 
-## Why the reader comes here too
+## The reader
 
-The scope of this package is probe **and** reader, not probe alone.
+The probe's packet scan returns every packet's time, size, and keyframe flag
+in decode order -- the data frame-exact seeking needs. Keeping the reader in
+the same package keeps that index next to its only consumer.
 
-`scan_packets` already returns every packet's time, size, and keyframe flag in
-decode order. **That is a seek index.** Frame-exact random seeking is the one
-genuinely difficult part of reading video through ffmpeg, and the probe already
-collects exactly the data that solves it. Splitting probe from reader puts the
-index in one package and its only consumer in another.
+`VideoReader` decodes in process through libav (the `av` package). A seek
+resolves the target's preceding keyframe from the packet index, seeks the
+container to that keyframe's timestamp, verifies the decoded landing, and
+counts frames forward to the target. The index carries every frame's actual
+timestamp, so no frame-index-to-time conversion exists to get wrong.
 
-It is also an upgrade rather than a risk: the reader being replaced seeks with
-OpenCV's `CAP_PROP_POS_FRAMES`, which is a well-known source of off-by-N frame
-errors.
+For comparison, the OpenCV seeking this replaces converts the frame index to a
+timestamp through one average frame rate (`CAP_PROP_POS_FRAMES`). Measured
+against pixel-content ground truth with opencv-python 5.0.0: on constant-rate
+files that conversion is sound -- every control seek landed exactly, so
+constant-rate datasets were not being misread. On variable-rate files it is
+wrong wherever the local rate differs from the average -- on a fixture with a
+10 fps stretch inside a 30 fps recording, 12 of 14 seeks landed off by -35 to
++25 frames (upstream reports of this class span 2015-2025: opencv/opencv
+issues 4890, 9053, 20227, 26827). Variable rate matters for this corpus
+because recordings drop frames when the machine gets busy.
+`tests/io/test_reader_vfr.py` pins the reader's frame-exact landing on that
+variable-rate shape.
 
-The reader decodes in process through libav (the `av` package) rather than
-through a subprocess pipe of the kind moviepy's `FFMPEG_VideoReader` (MIT) and
-imageio-ffmpeg (BSD-2) both use -- see the spec's "In-process decode supersedes
-the subprocess pipe for io" for the gate evidence behind that choice. It
-improves on OpenCV's seeking by using the exact packet index rather than
-timestamp guesswork: a seek moves the container to the target's preceding
-keyframe presentation timestamp with backward resolution, verifies the decoded
-landing matches that keyframe, then counts frames forward to the target, landing
-frame-exact. That is the structural fix for OpenCV's off-by-N seeking.
+An earlier version of the reader piped frames from an ffmpeg subprocess (the
+architecture moviepy and imageio-ffmpeg use); the measurements behind the move
+to in-process decode are recorded in
+`docs/specs/2026-07-16-extraction-and-reader-design.md`.
 
 
 ## The OpenCV decode problem
 
-`opencv-python` wheels bundle their own ffmpeg build. That build is not under
-this project's control, cannot be upgraded independently, and its codec table
-varies by wheel version, platform, and install method. This is an ownership
-problem, not a universal impossibility: a distro OpenCV linked against a
-capable system ffmpeg, or a custom CUDA build, can decode AV1. The pip wheel
-this stack installs cannot, in any configuration -- probing opencv-python
-4.13 shows no AV1 software decoder (no dav1d, no libaom) and no hardware
-decode path at all (no CUDA, no NVCUVID, no VA-API), so a dedicated GPU
-changes nothing for it: an AV1 file opens but decodes zero frames. Which
-capability you get is a property of whichever binary happened to be
-installed, invisible to the code that depends on it.
-
-AV1 is the transcode codec for this stack, chosen for compression efficiency
-on this content class, royalty freedom, and archive runway (see "Why AV1 and
-not H.264" under Transcode semantics). So:
-
-**A file this package transcodes for analysis cannot be read back by the
-toolkit that consumes it, for as long as that toolkit decodes through OpenCV.**
-
-That makes replacing OpenCV decoding a prerequisite of the codec decision, not
-a cleanup that can be deferred. It also sets a hard sequencing constraint: the
-transcode must not ship to production before the reader lands, or the stack
-produces files it cannot read.
-
-To confirm the codec table of a specific wheel:
+`opencv-python` wheels bundle their own ffmpeg build: not under this project's
+control, not independently upgradable, with a codec table that varies by wheel
+version and platform. A distro OpenCV linked against a capable system ffmpeg
+can decode AV1; the pip wheel this stack installs cannot -- probing the 4.13
+and 5.0.0 wheels shows no AV1 software decoder (no dav1d, no libaom) and no
+hardware decode path (no CUDA, no NVCUVID, no VA-API), so an AV1 file opens
+and decodes zero frames, GPU or not. To check any specific wheel:
 
 ```bash
 python -c "import cv2; print(cv2.getBuildInformation())" | grep -i -A5 "Video I/O"
 ```
 
-### The problem is narrower than "remove OpenCV"
+The transcode codec is currently AV1 (see "Why AV1 and not H.264"; the choice
+is still open to discussion), and the wheel cannot decode it, so a file
+transcoded for analysis could not be read back by a toolkit that decodes
+through OpenCV. Owning the decode stack is therefore a prerequisite of any
+modern codec, AV1 or a successor; the sequencing constraint under "Adopting
+this package" follows from it. Choosing AV1 did not create the problem -- the
+wheel decodes H.264 and H.265 only because those decoders are built into
+libavcodec, while AV1's (dav1d, libaom) are external libraries the wheel
+omits; AV1 is simply the first codec this stack uses that exposes the
+ownership defect.
 
-The full OpenCV surface in `mosaic`'s `video_io.py` is small. Split by whether a
-codec is involved:
+### Narrower than "remove OpenCV"
 
-- **Codec-bound, and the only exposure:** `cv2.VideoCapture` and the
-  `cv2.CAP_PROP_*` properties -- decode, seek, and metadata. Metadata is already
-  answered better by the probe.
-- **Codec-free, no exposure at all:** `cv2.resize` / `INTER_AREA`,
-  `cv2.cvtColor` / `COLOR_BGR*`, `cv2.imwrite`. These are pure image operations.
-  ffmpeg could do them via `-vf scale` and `-pix_fmt`, but there is no reason to
-  force it.
+Splitting `mosaic`'s OpenCV surface by whether a codec is involved:
 
-So the migration is surgical: **replace `VideoCapture`, keep the image
-operations.** This is not a project to drop the OpenCV dependency. OpenCV
-remains a `mosaic` dependency regardless -- more than a dozen modules use it for
-overlays, identity models, and pose training converters. It simply stops being
-the decoder.
+- Codec-bound: `cv2.VideoCapture` and the `CAP_PROP_*` properties -- decode,
+  seek, metadata. This is what the reader and the probe replace.
+- Codec-free: `cv2.resize`, `cv2.cvtColor`, `cv2.imwrite`, and the rest of the
+  image operations. These stay. OpenCV remains a `mosaic` dependency for
+  overlays, identity models, and pose training converters; it stops being the
+  decoder.
 
-### What genuinely cannot be native ffmpeg
+The one structure ffmpeg cannot read is the imgstore index layer (the
+`__store` descriptor, per-chunk `.npz` indexes, the frame-to-chunk mapping).
+That layer is plain Python and numpy and stays in `mosaic`. The chunks
+themselves are mp4, which the reader decodes fine.
 
-Only one thing, and less of it than expected.
 
-**The imgstore index layer.** An imgstore is a descriptor with a top-level
-`__store` key plus zero-padded chunk files (`000000.mp4` with an `000000.npz`
-index). ffmpeg cannot read the descriptor, the per-chunk `.npz` index, or the
-mapping from a contiguous frame index to a (chunk, `frame_index`) pair. But
-that layer is plain Python and numpy -- it needs no OpenCV -- and **the chunks
-themselves are mp4, which ffmpeg decodes fine**. So `imgstore_io` splits along
-the same line as everything else: the index and descriptor logic stays Python,
-the chunk decode becomes ffmpeg. Its OpenCV usage (`VideoCapture`, `cvtColor`
-for grayscale to BGR, `CAP_PROP_*`, `resize`) is all replaceable. It is already
-an optional dependency, gated behind `_require_imgstore`.
+## Transcode semantics
 
-Nothing else in either media module fundamentally requires OpenCV for I/O.
+Two targets, one codec -- currently AV1, see below -- differing in rate
+control and in whether they run at all. The original upload is preserved in
+every case; derivatives are separate artifacts.
+
+| Target | Trigger | Opt-out |
+| --- | --- | --- |
+| Analysis | Any analysis reason: variable frame rate, unreliable timing metadata, rotation, non-square pixels, interlacing. | None -- required for valid per-frame results. |
+| Playback | A hard stream reason: the file cannot play in the browser at all. | None. |
+| Playback | A soft stream reason: the file plays, but not well or not everywhere. | Opt-out; presented as a suggestion. |
+
+The verdict selects the minimum operation, not a blanket re-encode: a header
+that lies about timing gets a `-c copy` remux with a corrected timebase, a
+tail `moov` gets `-movflags +faststart`, a supported stream in an unopenable
+container gets a rewrap, and only a defect in the pixel grid or the frame
+clock gets a real AV1 re-encode. Encoding runs on SVT-AV1 (CPU), or NVENC AV1
+when the caller permits hardware and `mosaic_media.hwaccel` verifies a usable
+device -- an encoder listing proves it was compiled in, not that it works.
+
+Variable frame rate is the hard measurement. ffprobe and OpenCV both produce
+false positives on containers that merely quantize timestamps to milliseconds,
+so the probe fits a uniform grid across all frame timestamps and measures the
+worst deviation in frame periods -- over the whole file, because a bounded
+window misclassified a large share of the ingestion corpus this was developed
+against (recordings drop frames when the machine gets busy, not at the start).
+
+The transcoded output is re-probed as its acceptance test (a variable-rate
+source resampled to constant rate can still carry residual drift), and that
+probe also mints the derivative's authoritative `MediaFacts`. A red verdict on
+the output is terminal: the converter raises, the job is marked failed for a
+human to see, and nothing retries -- the same deterministic command on the
+same input would reproduce the same red output. Retries are reserved for
+transient faults such as a killed subprocess or a full disk.
+
+### Why AV1 and not H.264
+
+AV1 is the current choice, not a settled constant -- the discussion stays
+open. Encoder selection is confined to the transcode layer and playback
+support is injected profile policy, so revisiting the choice would not ripple
+through consumers. The case for AV1 today: the derivatives are a permanent
+second copy of every defective upload, which makes the codec choice a storage
+decision first.
+
+- Lower bitrate than H.264 at equal perceptual quality: published encoder
+  comparisons typically report 30-50% BD-rate savings, varying by encoder,
+  preset, and content (not measured on this corpus). Equivalently, at a fixed
+  storage budget the derivative carries fewer quantization artifacts into the
+  tracker.
+- Royalty-free (AOMedia). H.265's patent pools rule it out on their own;
+  H.264's pool is manageable but nonzero for a platform distributing encoded
+  content.
+- Archive runway: re-encoding a corpus later is expensive, H.264 encoders are
+  at the end of their improvement curve, and AV1 encoders keep improving
+  against a fixed bitstream specification.
+- Playback coverage matches the shipped profile: current Chrome, Firefox, and
+  Edge ship software AV1 decode; Safari plays AV1 only with hardware decode
+  (M3 and A17 or later). The default profile is Chrome; if Safari becomes a
+  target, the playback codec is profile policy, not a constant.
+
+H.264 would buy faster encodes, cheaper decode, and universal playback -- at
+roughly twice the storage, forever. Originals are preserved and the toolkit
+decodes through libav, so universality is already covered structurally.
 
 
 ## CLI composition
 
-`mosaic` already depends on `typer` and already composes sub-applications:
-
-```python
-app.add_typer(features_app, name="features")
-app.add_typer(tracking_app, name="tracking")
-```
-
-Mounting this package's app is the identical pattern:
+`mosaic` composes typer sub-applications; mounting this package's app is the
+same pattern:
 
 ```python
 app.add_typer(media_app, name="media")
 ```
 
-which gives a toolkit user the native form:
-
 ```bash
+mosaic media probe video.mp4
 mosaic media transcode video.mp4 --target playback --output media/
 ```
 
-`--output` is required and takes a file path or a directory. Given a directory,
-the derivative's filename is derived from the source stem with an `.mp4`
-container; given a file path, that path is used as-is. A file destination must
-end in `.mp4` -- the produced container is always mp4, and the converter
-refuses a destination whose extension would misdescribe it. The resolved output
-may never equal the source -- the original upload is preserved in every case, so
-the converter refuses to write over it. The package holds no knowledge of any
-dataset directory layout: a convention like keeping originals in `media_raw/`
-and transcodes in `media/` belongs to the caller, exactly like browser policy.
-Re-running the same transcode replaces its output atomically.
+`--output` takes a file path or an existing directory (the filename then
+derives from the source stem, always `.mp4`). The converter refuses to write
+over the source and refuses a file destination that does not end in `.mp4`;
+re-running the same transcode replaces its output atomically. The package
+knows no dataset layout -- a convention like `media_raw/` for originals and
+`media/` for derivatives belongs to the caller, like every other policy.
 
-The dependency runs `mosaic -> mosaic-media`, one way, no cycle.
+Job infrastructure calls the Python API (`run_transcode`) rather than the CLI:
+structured exceptions, no argv escaping, no output parsing. The CLI exists for
+humans and standalone use; both entry points are the same one-way edge.
 
-**The job infrastructure calls the Python API directly, not the CLI.** Since
-`mosaic` imports this package to mount the app, its transcode jobs should call
-the library: structured exceptions, no argv escaping, no output parsing. The
-CLI exists for humans and for standalone use. Both entry points are the same
-one-way edge.
-
-The division of responsibility across the stack:
-
-- **Policy** -- which criteria a file must satisfy, and which command follows
-  from a failure -- is constructed in `mosaic_api` from its own playback profile
-  and thresholds, and executed here. This package encodes no opinion about any
-  one browser.
-- **Execution** -- ffmpeg invocation, GPU acceleration, codec settings -- lives
-  here.
-- **Scheduling** -- queueing, subprocess lifecycle, cancellation -- stays in
-  `mosaic`'s job infrastructure, which calls in.
-
-What crosses the boundary from the backend is a command specification, never a
-policy.
-
-
-## Transcode semantics
-
-Two targets, one codec (AV1), differing in rate control and in whether they run
-at all. The raw upload is preserved in every case; the derivatives are separate
-artifacts.
-
-### Why AV1 and not H.264
-
-The derivatives are a permanent second copy of every defective upload, so the
-codec choice is a storage decision first:
-
-- **Roughly half the bitrate of H.264 at equal perceptual quality** (40-50%
-  BD-rate savings is the consistently reproduced range), and static-camera
-  behavioral footage -- a fixed arena, a long static background, small moving
-  subjects -- is the content class where AV1's prediction tools open that gap
-  widest. Equivalently: at a fixed storage budget the derivative carries
-  fewer quantization artifacts into the tracker.
-- **Royalty-free by construction** (AOMedia). H.265's fragmented patent pools
-  rule it out on their own; H.264's pool is manageable but nonzero for a
-  platform distributing encoded content.
-- **Archive runway.** Re-encoding a corpus later is expensive. H.264 is at
-  the end of its improvement curve; AV1 encoders keep improving against a
-  fixed bitstream specification.
-- **Playback coverage matches the injected profile.** Chrome, Firefox, and
-  Edge software-decode AV1 everywhere; Safari requires AV1 hardware (M3 and
-  A17 or later). The shipped default profile is Chrome; if Safari ever
-  becomes a target, the playback codec is profile policy, not a hardcoded
-  constant.
-
-What H.264 would buy instead: faster encodes, cheaper decode, and
-decode-everywhere universality -- at roughly twice the storage, forever.
-Universality is already provided structurally (originals are preserved, and
-the toolkit decodes through system ffmpeg); encode speed is a one-time cost
-per defective file.
-
-One causality worth stating plainly: the OpenCV decode problem above is not
-caused by choosing AV1. It is an ownership defect that the first modern codec
-exposes -- the wheel decodes H.264 and H.265 only because their software
-decoders are built into libavcodec, while AV1's (dav1d, libaom) are external
-libraries the wheel omits.
-
-| Target | Trigger | Opt-out |
-| --- | --- | --- |
-| Analysis | Any analysis reason: variable frame rate, unreliable timing metadata, rotation, non-square pixels, interlacing. | **None.** Required to ensure valid per-frame results. |
-| Playback | A hard stream reason -- the file cannot play in the browser at all. | None. Mandatory. |
-| Playback | A soft stream reason -- the file plays, but not well or not everywhere. | Opt-out. Presented as a suggestion. |
-
-Two properties of the existing verdict worth preserving through the move:
-
-- **It selects the minimum operation, not a re-encode by default.** A header
-  that lies about timing needs a `-c copy` remux with a corrected timebase; a
-  `moov` at the tail needs `-movflags +faststart`; only genuine variable frame
-  rate needs a real re-encode. This is the answer to "should we re-encode
-  everything" -- no, and the reason set is what picks the cheap fix.
-- **Variable frame rate is the hard case.** ffprobe and OpenCV both produce
-  false positives on containers that merely quantize timestamps to
-  milliseconds. The probe fits a uniform grid across the frame timestamps and
-  measures the worst deviation in frame periods. The fit must cover the whole
-  file: a bounded window misclassifies a large share of the corpus, because a
-  recording drops frames when the machine gets busy, not at the start.
-
-The transcoded output is re-probed as its acceptance test. A variable-rate
-source resampled to a constant rate can still carry residual drift, so the
-verdict runs on both sides of the transcode.
-
-A red verdict on the transcoded output is a terminal failure. The converter
-raises and the job is marked failed for a human to see; nothing in the stack
-ever responds to acceptance failure by scheduling another transcode. Re-running
-the same deterministic command on the same input would only reproduce the same
-red output, so a retry could loop. Retries are reserved for transient faults (a
-killed subprocess, a full disk). Confidence that a command produces clean output
-is established before any job runs, by the development-time corpus acceptance
-tests.
+Division of responsibility: policy (which criteria a file must satisfy, which
+profile applies) is constructed by the caller and injected; execution (ffmpeg
+invocation, encoder selection) lives here; scheduling (queueing, cancellation,
+subprocess lifecycle) stays in `mosaic`'s job infrastructure, which calls in.
+What crosses the boundary is a command specification, never a policy.
 
 
 ## Metadata authority
 
 The probe runs once, at ingestion, and its `MediaFacts` travel forward as the
-authoritative metadata. **Consumers do not re-derive them.**
-
-This matters because a file that is already analysis-clean is not re-encoded,
-so downstream code cannot assume canonically-written bytes. If the toolkit
-re-probes with OpenCV, it reintroduces exactly the false-positive variable-rate
-detection and unreliable frame counts that this package exists to avoid. One
-measurement at the boundary, carried forward, is the whole point.
+authoritative metadata; consumers inject them instead of re-measuring. A file
+that is already analysis-clean is never re-encoded, so downstream code cannot
+assume canonically written bytes -- re-probing with OpenCV would reintroduce
+the false-positive variable-rate detection and unreliable frame counts this
+package exists to avoid.
 
 
-## Extraction plan
+## Extraction boundary
 
-Phases are ordered by dependency. The sequencing constraint from the OpenCV
-decode problem is binding: the transcode cannot ship to production before the
-reader lands.
+The code was extracted from `mosaic_api/src/mosaic_api/media_probe/`. The
+boundary is semantic, not mechanical: the original package had no external or
+database imports anywhere, so what moved was decided by domain -- media
+measurement moved, backend vocabulary stayed.
 
-### 1. Extract the probe core
+### Extraction inventory
 
-Move the modules marked `mosaic-media` in the inventory, split `sequence.py`,
-leave `facts_io.py` and `media_types.py` behind. No import untangling is needed;
-the package is already standard library only. Rewire `mosaic_api` onto the new
-import path. No behavior change -- the acceptance test is that the backend's
-existing probe tests pass unmodified against the extracted package.
-
-Add the import guard for the standard-library-only invariant and record its new
-justification.
-
-Use an editable path dependency rather than releases. `mosaic-behavior` is
-already wired into `mosaic_api` this way, and the precedent matters here: every
-added measurement touches `facts.py` (in this package) and `FACT_FIELDS` (in the
-backend) as one logical change across two repositories. Release-and-bump
-friction on that surface would be paid on every field.
-
-### 2. Frame reader and seek index
-
-Build the in-process libav reader behind the `[io]` extra: decode to raw
-frames, seek via the packet index that `scan_packets` already produces,
-multi-video reading. numpy and av, no OpenCV.
-
-### 3. Toolkit adoption
-
-Rewire `mosaic`'s `get_video_metadata` onto the probe, deleting the OpenCV
-property read, the one-off ffprobe frame-rate fallback, and the full-decode
-frame counter. Rewire `video_io`'s readers and `imgstore_io`'s chunk decode onto
-the reader from phase 2, keeping the imgstore index layer as is and keeping
-OpenCV for image operations.
-
-**This phase is what justifies the package.** The case for sitting upstream of
-both consumers rather than staying in the backend rests on the toolkit actually
-adopting it. Deferred, this is a rename with packaging overhead and one
-consumer.
-
-### 4. Transcode command construction and CLI
-
-The command builder -- verdict to argv -- plus the converter, GPU acceleration,
-and the typer app. Mount it into `mosaic`'s CLI. Wire `mosaic`'s job
-infrastructure to the Python API.
+| Module | Destination | Reason |
+| --- | --- | --- |
+| `errors.py` | mosaic-media | Media-domain error type. |
+| `ffprobe.py` | mosaic-media | Header read and packet scan. |
+| `timing.py` | mosaic-media | Grid fit over packet timestamps. |
+| `gop.py` | mosaic-media | Seek cost in bytes and frames. |
+| `boxes.py` | mosaic-media | ISOBMFF `moov` placement. |
+| `facts.py` | mosaic-media | `MediaFacts`, the measurement result. |
+| `probe.py` | mosaic-media | Composes the above into one scan. |
+| `candidates.py` | mosaic-media | Video extension set. |
+| `policy.py` | mosaic-media | The `PlaybackProfile` and `Thresholds` types; which profile to apply stays with the caller. |
+| `verdict.py` | mosaic-media | Reason sets; the transcode selects commands from them. |
+| `downscale.py`, `thumbnail.py` | mosaic-media | ffmpeg-produced derivatives, the converter's family. |
+| `media_types.py` | stays in `mosaic_api` | Container to HTTP `Content-Type`; a download and `<source type>` concern. |
+| `facts_io.py` | stays in `mosaic_api` | Names the backend's persistence columns. It never imported the ORM -- it is written against a structural `Protocol` -- and stays for what it encodes, not what it imports. |
+| `sequence.py` | split | The uniformity check and `canonical_fps` moved (the multi-video reader validates sequences with them); `duplicate_stems` stayed (backend storage layout). |
 
 
 ## Open questions
 
-- **Repository visibility.** The transcode converter was scoped as a private
-  backend repository. If this package is not private, the split needs a decision
-  and the command builder needs an explicit home -- it depends on `verdict.py`,
-  which lives here, but it is transcode policy.
-- **Scope ceiling.** Whether `mosaic`'s readers move here permanently under
-  `[io]`, making this the home for all media I/O and leaving `mosaic` with image
-  processing only. The extras split above is arranged so that this can happen
-  without breaking the standard-library-only core, but it is not yet decided.
-- **GPU coverage.** AV1 hardware encode is limited to recent GPUs. The CPU
-  fallback via SVT-AV1 is acceptable on a decent multi-core machine at a sane
-  preset. Capability probing for NVENC and NVDEC already exists in `mosaic`'s
-  `video_io` and should move here with the reader rather than be reimplemented.
-</content>
+- **Scope ceiling.** Whether `mosaic`'s remaining media I/O (the imgstore
+  index layer, the reader dispatchers) eventually moves here under `[io]`,
+  leaving `mosaic` with image processing only. The extras split is arranged so
+  this could happen without touching the standard-library core; nothing forces
+  the decision yet.
