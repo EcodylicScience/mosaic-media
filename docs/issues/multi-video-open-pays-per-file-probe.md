@@ -1,5 +1,17 @@
 # Multi-video reader construction pays a per-file probe the consumer path never needs
 
+## Resolution
+
+`MultiVideoReader` now accepts keyword-only `facts` and `indices` sequences
+parallel to the paths (length-checked; paths-only construction unchanged), so
+a consumer holding ingestion `MediaFacts` pays neither the ffprobe subprocess
+nor the packet rescan on open. `seek` additionally reuses the open segment
+reader instead of reconstructing it per call. The junction workload gained a
+gated injected-facts form (the consumer-shaped open) in
+`tests/bench/test_sparse_and_multi.py`; the from-scratch form remains a
+bounded report with its recorded rationale. The measured ratio for the
+injected form is recorded in the spec's gate table.
+
 ## Problem
 
 Constructing a `MultiVideoReader` runs `probe_media` for every file in the

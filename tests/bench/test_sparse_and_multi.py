@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 from mosaic_media import MediaFacts, probe_media
+from mosaic_media.io.index import SeekIndex, build_seek_index
+from mosaic_media.io.packets import scan_packets_in_process
 from tests.bench.harness import (
     DEFAULT_ROUNDS,
     Workload,
@@ -105,6 +107,29 @@ def _reader_multi_junction(paths: list[Path], count_first: int, window: int) -> 
     return decoded_count
 
 
+def _reader_multi_junction_injected(
+    paths: list[Path],
+    facts: list[MediaFacts],
+    indices: list[SeekIndex],
+    count_first: int,
+    window: int,
+) -> int:
+    from mosaic_media.io import MultiVideoReader
+
+    decoded_count = 0
+    reader = MultiVideoReader(paths, facts=facts, indices=indices)
+    try:
+        reader.seek(count_first - window)
+        for _ in range(2 * window):
+            ok, frame = reader.read()
+            if not ok or frame is None:
+                break
+            decoded_count += 1
+    finally:
+        reader.close()
+    return decoded_count
+
+
 @pytest.mark.parametrize("corpus_key", ["gop12", "gop250"])
 def test_gate_sorted_sparse_extraction(
     bench_corpus: dict[str, Path], corpus_key: str
@@ -156,4 +181,39 @@ def test_report_multi_video_junction(bench_corpus: dict[str, Path]) -> None:
     assert_bounded(
         run_workload(workload, rounds=_MULTI_VIDEO_JUNCTION_ROUNDS),
         max_slowdown=1.5,
+    )
+
+
+def test_gate_multi_video_junction_with_injected_facts(
+    bench_corpus: dict[str, Path],
+) -> None:
+    """The consumer-shaped open, gated: facts from ingestion and indices held
+    by the caller are injected, so the timed region pays no ffprobe subprocess
+    and no packet rescan -- construction is the metadata-authority path
+    consumers actually run. The 0.9 threshold is the owned-BGR-copy carve, the
+    same tier as sequential decode, which this workload is once the open cost
+    is out of the way. The from-scratch construction stays a bounded report
+    above."""
+    path = bench_corpus["gop12"]
+    paths = [path, path]
+
+    def setup() -> tuple[list[MediaFacts], list[SeekIndex]]:
+        facts = probe_media(path)
+        packets, _source = scan_packets_in_process(path)
+        index = build_seek_index(packets)
+        return [facts, facts], [index, index]
+
+    workload = Workload(
+        name="multi-video-junction-injected[gop12+gop12]",
+        setup=setup,
+        cv2_callable=lambda _context: _cv2_multi_junction(
+            path, path, BENCH_FRAMES, JUNCTION_WINDOW
+        ),
+        reader_callable=lambda context: _reader_multi_junction_injected(
+            paths, context[0], context[1], BENCH_FRAMES, JUNCTION_WINDOW
+        ),
+    )
+    assert_gate(
+        run_workload(workload, rounds=_MULTI_VIDEO_JUNCTION_ROUNDS),
+        threshold=0.9,
     )

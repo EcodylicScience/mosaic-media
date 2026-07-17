@@ -1,13 +1,18 @@
 """Read N ordered video files as one global frame space. Requires numpy and av.
 
 Segment 0 owns global frames [0, N0), segment 1 owns [N0, N0 + N1), and so on.
-Each file is probed once; its MediaFacts are injected into a per-segment
-VideoReader so no file is re-measured on read. Uniformity across the sequence is
-validated with the probe's uniform_properties, the same check the arrangement
-layer uses, so a resolution or frame-rate mismatch is rejected at construction.
+Each file is probed once at construction -- or not at all when the caller
+injects `facts`, a sequence parallel to the paths: consumers hold MediaFacts
+from ingestion and measurement is never re-derived, so an injected open pays
+no ffprobe subprocess. `indices` likewise injects per-segment seek indices;
+segments without one build it from an in-process packet scan on first use.
+Uniformity across the sequence is validated with the probe's
+uniform_properties, the same check the arrangement layer uses, so a resolution
+or frame-rate mismatch is rejected at construction.
 """
 
 import bisect
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,7 +51,13 @@ class VideoSegment:
 
 
 class MultiVideoReader:
-    def __init__(self, video_paths: list[Path] | Path | str) -> None:
+    def __init__(
+        self,
+        video_paths: list[Path] | Path | str,
+        *,
+        facts: Sequence[MediaFacts] | None = None,
+        indices: Sequence[SeekIndex] | None = None,
+    ) -> None:
         self._closed: bool = False
         self._reader: VideoReader | None = None
         if isinstance(video_paths, (str, Path)):
@@ -56,24 +67,37 @@ class MultiVideoReader:
         if not paths:
             message = "at least one video path is required"
             raise ValueError(message)
+        if facts is not None and len(facts) != len(paths):
+            message = (
+                f"facts length {len(facts)} does not match "
+                f"video path count {len(paths)}"
+            )
+            raise ValueError(message)
+        if indices is not None and len(indices) != len(paths):
+            message = (
+                f"indices length {len(indices)} does not match "
+                f"video path count {len(paths)}"
+            )
+            raise ValueError(message)
 
         self._segments: list[VideoSegment] = []
         self._segment_starts: list[int] = []
         self._facts: list[MediaFacts] = []
-        self._indices: list[SeekIndex | None] = []
+        self._indices: list[SeekIndex | None] = (
+            [None] * len(paths) if indices is None else list(indices)
+        )
         properties: list[MeasuredVideoProperties] = []
         cumulative = 0
-        for path in paths:
+        for position, path in enumerate(paths):
             resolved = path.expanduser().resolve()
-            facts = probe_media(resolved)
-            self._facts.append(facts)
-            self._indices.append(None)
-            display_width, display_height = _displayed_dimensions(facts)
+            file_facts = facts[position] if facts is not None else probe_media(resolved)
+            self._facts.append(file_facts)
+            display_width, display_height = _displayed_dimensions(file_facts)
             self._segments.append(
                 VideoSegment(
                     path=resolved,
-                    frame_count=facts.frame_count,
-                    fps=facts.fps,
+                    frame_count=file_facts.frame_count,
+                    fps=file_facts.fps,
                     width=display_width,
                     height=display_height,
                     start_frame=cumulative,
@@ -81,15 +105,15 @@ class MultiVideoReader:
             )
             properties.append(
                 MeasuredVideoProperties(
-                    fps=facts.fps,
+                    fps=file_facts.fps,
                     width=display_width,
                     height=display_height,
-                    frame_count=facts.frame_count,
-                    duration=facts.duration,
+                    frame_count=file_facts.frame_count,
+                    duration=file_facts.duration,
                 )
             )
             self._segment_starts.append(cumulative)
-            cumulative += facts.frame_count
+            cumulative += file_facts.frame_count
 
         mismatch = uniform_properties(properties)
         if mismatch is not None:
@@ -175,7 +199,14 @@ class MultiVideoReader:
             message = "reader is closed"
             raise MediaProbeError(message)
         segment_index, local_frame = self.segment_for_frame(global_frame)
-        self._open_segment(segment_index, local_frame)
+        if self._reader is not None and segment_index == self._current_segment:
+            # The segment is already open: delegate to the open reader's seek,
+            # which reuses the live decoder when the target lies between its
+            # position and the target's keyframe, instead of closing and
+            # reconstructing the reader on every call.
+            self._reader.seek(local_frame)
+        else:
+            self._open_segment(segment_index, local_frame)
         self._global_frame = global_frame
 
     def read(self) -> tuple[bool, numpy.ndarray | None]:
