@@ -238,8 +238,9 @@ class VideoReader:
     def _decode_next(self) -> VideoFrame | None:
         """Pull the next frame from the decode iterator in presentation order,
         or None at a clean end of stream. A truncated or otherwise undecodable
-        file raises FFmpegError here, which maps to MediaProbeError -- preserving
-        the subprocess reader's truncated-file semantics."""
+        file raises FFmpegError here, which maps to MediaProbeError, so a decode
+        that dies mid-stream surfaces as an error rather than a silent short
+        read."""
         pending = self._pending_frame
         if pending is not None:
             self._pending_frame = None

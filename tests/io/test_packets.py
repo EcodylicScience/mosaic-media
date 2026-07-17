@@ -3,7 +3,11 @@ from pathlib import Path
 from mosaic_media.io.packets import scan_packets_in_process
 
 
-def test_scan_returns_pts_ordered_packets_with_offsets(clips: dict[str, Path]) -> None:
+def test_scan_returns_decode_order_packets_with_offsets(
+    clips: dict[str, Path],
+) -> None:
+    # scan_packets_in_process returns packets in decode order carrying byte
+    # offsets; build_seek_index is what sorts them into presentation order.
     packets, source = scan_packets_in_process(clips["cfr_mp4"])
     assert source == "pts"
     assert len(packets) > 0

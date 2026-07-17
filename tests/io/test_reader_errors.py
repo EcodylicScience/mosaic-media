@@ -12,9 +12,9 @@ from tests.helpers.corpus import generate_video
 
 def test_truncated_file_raises_instead_of_silently_ending(tmp_path: Path) -> None:
     # Probe the whole clip, then read a byte-truncated copy with those full-file
-    # facts injected. ffmpeg aborts on the incomplete file; without a decoder
-    # exit check that is indistinguishable from a short video and the read ends
-    # silently, so the reader must surface it as an error instead.
+    # facts injected. The libav decoder raises on the incomplete file; without
+    # surfacing that, a truncated read is indistinguishable from a short video
+    # and ends silently, so the reader must raise instead.
     clip = generate_video(tmp_path / "full.mp4", frames=48, fps=30.0, gop=12)
     facts = probe_media(clip)
     payload = clip.read_bytes()
@@ -34,9 +34,9 @@ def test_full_read_of_untouched_clip_terminates_cleanly(tmp_path: Path) -> None:
 
 
 def test_seek_after_close_raises(corpus_gop12: Path) -> None:
-    # A seek on a closed reader must raise before spawning anything, so a
-    # discarded reader cannot leave an orphaned ffmpeg child behind. The
-    # raise-before-spawn ordering makes the no-orphan property structural.
+    # A seek on a closed reader must raise immediately rather than touch the
+    # closed container, so a discarded reader stays inert. The raise-on-closed
+    # guard makes that structural.
     reader = VideoReader(corpus_gop12)
     reader.close()
     with pytest.raises(MediaProbeError):

@@ -1,13 +1,13 @@
 """Seek index over a packet scan. Standard library only (bisect); no numpy.
 
-scan_packets returns packets in decode order, but the reader emits frames in
-presentation order and every public frame index is a presentation index. This
-index sorts packet timestamps ascending to recover presentation order, records
-which presentation frames are keyframes, and answers the one question a
-frame-exact ffmpeg seek needs: the preceding keyframe of a target frame, as a
-(frame index, timestamp) pair. Seeking with an input -ss at that timestamp and
-discarding target-minus-keyframe frames lands on the target exactly, which is
-what makes OpenCV's off-by-N CAP_PROP_POS_FRAMES class of bugs impossible here.
+The packets from scan_packets_in_process arrive in decode order, but the reader
+emits frames in presentation order and every public frame index is a
+presentation index. This index sorts packet timestamps ascending to recover
+presentation order and records which presentation frames are keyframes, so it
+answers the two queries the reader's seek path asks: the preceding keyframe of a
+target frame, as a (frame index, timestamp) pair, and the grouping of sparse
+targets by shared preceding keyframe. The seek itself -- landing on that
+keyframe and counting frames forward to the target -- lives in reader.py.
 """
 
 import bisect

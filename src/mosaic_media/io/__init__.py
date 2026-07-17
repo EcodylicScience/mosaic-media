@@ -1,7 +1,7 @@
-"""Frame reading through system ffmpeg. Requires the [io] extra (numpy).
+"""Frame reading through in-process libav bindings (PyAV). Requires numpy and av.
 
 This subpackage is not re-exported by the mosaic_media core facade: importing
-mosaic_media must not pull numpy. Import mosaic_media.io explicitly.
+mosaic_media must not pull numpy or av. Import mosaic_media.io explicitly.
 """
 
 from .index import SeekIndex, build_seek_index

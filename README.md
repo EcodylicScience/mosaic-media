@@ -105,11 +105,13 @@ Three layers, each a heavier dependency set than the last:
 `mosaic_api` imports the core and must not pull in `typer` or `numpy` through
 it. Only `mosaic_media.cli` may import `typer`.
 
-The reader decodes in process through libav (the `av` package) and needs no
-ffmpeg binary at runtime; its codec table is verified by the codec guard, with
+The `VideoReader` decodes in process through libav (the `av` package) and needs
+no ffmpeg binary at runtime; its codec table is verified by the codec guard, with
 `av --no-binary av` (building against the system libav) as the fallback for a
-locked-down environment. The probe, the transcode command construction, and the
-CLI require a system `ffmpeg` on `PATH`: version 5.1 or newer for the runtime
+locked-down environment. `MultiVideoReader` still probes each file through the
+probe layer's ffprobe subprocess, so it depends on a system `ffprobe`. The
+probe, the transcode command construction, and the CLI require a system `ffmpeg`
+on `PATH`: version 5.1 or newer for the runtime
 path (`-fps_mode`), and 6.0 or newer to run the test suite
 (`-display_rotation`), which the test corpus generation also depends on.
 

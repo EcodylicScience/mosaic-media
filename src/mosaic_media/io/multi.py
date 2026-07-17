@@ -1,4 +1,4 @@
-"""Read N ordered video files as one global frame space. Requires numpy.
+"""Read N ordered video files as one global frame space. Requires numpy and av.
 
 Segment 0 owns global frames [0, N0), segment 1 owns [N0, N0 + N1), and so on.
 Each file is probed once; its MediaFacts are injected into a per-segment
@@ -23,12 +23,13 @@ from .reader import VideoReader
 
 
 def _displayed_dimensions(facts: MediaFacts) -> tuple[int, int]:
-    """The (width, height) a VideoReader emits for `facts`. ffmpeg autorotates,
-    so a quarter-turn source is displayed with its coded width and height
-    swapped. The sequence must record and compare that displayed orientation,
-    not the coded one: an upright clip and a quarter-turned clip of equal coded
-    size are uniform on the coded numbers yet emit transposed frames, so the
-    coded comparison would admit a sequence the reader cannot stitch."""
+    """The (width, height) a VideoReader emits for `facts`. The reader
+    autorotates through its transpose graph, so a quarter-turn source is
+    displayed with its coded width and height swapped. The sequence must record
+    and compare that displayed orientation, not the coded one: an upright clip
+    and a quarter-turned clip of equal coded size are uniform on the coded
+    numbers yet emit transposed frames, so the coded comparison would admit a
+    sequence the reader cannot stitch."""
     if facts.rotation_degrees % 180 == 90:
         return facts.height, facts.width
     return facts.width, facts.height

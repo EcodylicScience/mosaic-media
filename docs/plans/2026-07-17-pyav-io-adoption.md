@@ -235,15 +235,17 @@ extra.
   (`opencv-python` stays bench-only), `cli` extra untouched, core `dependencies`
   stay `[]`.
 
-- [ ] Sync so av is importable (the standing environment is
-  `uv sync --all-extras --group dev`; this step names the one extra these tests
-  need):
+- [ ] Sync so av is importable. `uv sync` prunes the environment to exactly the
+  named extras and groups, so a bare `uv sync --extra io` evicts the `cli` extra
+  and the `bench` group that other tests import, breaking collection. Sync the
+  full environment instead:
 
   ```bash
-  uv sync --extra io
+  uv sync --all-extras --group dev
   ```
 
-  Expected: uv resolves and installs `av` (and the default `dev` group).
+  Expected: uv resolves and installs `av` alongside the existing extras and
+  groups.
 
 - [ ] Confirm av imports and the default suite is unchanged (no behavior change
   yet):

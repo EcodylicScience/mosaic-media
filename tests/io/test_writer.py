@@ -88,10 +88,10 @@ def test_hardware_encode_falls_back_when_device_unusable(
 
 
 def test_writer_surfaces_ffmpeg_startup_failure(tmp_path: Path) -> None:
-    # An output extension ffmpeg cannot map to a muxer makes ffmpeg exit at
-    # startup ("Unable to find a suitable output format"), before it reads a
-    # frame. The dead process must surface as a MediaProbeError from write() or
-    # close(), never a silently incremented frame count.
+    # An output extension av cannot map to a muxer makes av.open raise at
+    # construction ("Unable to find a suitable output format"), before any frame
+    # is encoded. That must surface as a MediaProbeError, never a silently
+    # incremented frame count.
     output = tmp_path / "out.unknownext"
     frame = numpy.zeros((240, 320, 3), dtype=numpy.uint8)
     with pytest.raises(MediaProbeError):
