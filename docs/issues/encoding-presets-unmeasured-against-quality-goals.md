@@ -1,13 +1,28 @@
 # Encoding preset quality is unmeasured against the stated goals
 
+## Interim
+
+The defaults were raised ahead of measurement -- analysis crf 20 -> 14,
+playback crf 32 -> 26 -- because for every file the analysis verdict
+re-encodes, the derivative replaces the original as tracker input, and until
+the measurement exists, erring toward
+fidelity is the direction whose mistake is recoverable: a too-conservative
+value costs storage that a later measured value can re-derive cheaper, while
+a too-lossy value silently degrades analysis results in the meantime. The
+measurement below still decides the final values, and the NVENC/SVT-AV1
+decoupling remains open.
+
 ## Problem
 
-`ANALYSIS_ENCODING` (SVT-AV1 crf 20, preset 6) and `PLAYBACK_ENCODING`
-(crf 32, preset 8) in `src/mosaic_media/transcode/commands.py` were set by
-encoder convention, not measurement. The goals they serve: near lossless for
-the analysis derivative -- it replaces the original as tracker input under
-the metadata authority, so quantization loss propagates into every
-downstream measurement -- and visually lossless for the playback derivative.
+`ANALYSIS_ENCODING` and `PLAYBACK_ENCODING` in
+`src/mosaic_media/transcode/commands.py` were set by encoder convention, not
+measurement (originally analysis crf 20 at preset 6 and playback crf 32 at
+preset 8; the interim note above records the current values). The goals they
+serve: near lossless for the analysis derivative -- for a file the analysis
+verdict re-encodes, it replaces the original as tracker input under the
+metadata authority, so quantization loss propagates into that file's
+downstream measurements -- and visually lossless for the playback
+derivative.
 
 By common encoder practice, crf 20 at preset 6 sits at the top of "visually
 transparent for most content", one notch below near lossless, and crf 32 at

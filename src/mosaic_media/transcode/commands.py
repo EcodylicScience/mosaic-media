@@ -85,10 +85,19 @@ class EncodingParameters:
     keep_audio: bool
 
 
-# The analysis derivative is measured, not watched: higher quality, encoder-default
-# GOP, no audio.
+# The analysis derivative is measured, not watched: encoder-default GOP, no
+# audio, and quality that errs toward fidelity. For a file the analysis
+# verdict re-encodes, the derivative replaces the original as tracker input,
+# so quantization loss propagates into that file's downstream measurements
+# (clean files are never re-encoded and keep their originals); crf 14 sits
+# inside the conventionally near-lossless band,
+# below the "visually transparent" range (crf ~18-24), at roughly twice the
+# storage of the earlier crf 20 by the ~6-crf-per-bitrate-doubling rule of
+# thumb. A too-conservative value costs re-derivable storage; a too-lossy one
+# silently degrades analysis results. The final value comes from corpus
+# measurement (docs/issues/encoding-presets-unmeasured-against-quality-goals.md).
 ANALYSIS_ENCODING = EncodingParameters(
-    quality=20,
+    quality=14,
     cpu_preset=6,
     nvenc_preset="p5",
     pixel_format="yuv420p",
@@ -96,10 +105,14 @@ ANALYSIS_ENCODING = EncodingParameters(
     keep_audio=False,
 )
 
-# The playback derivative is streamed and scrubbed: smaller, a capped GOP for
-# seeking, audio preserved.
+# The playback derivative is streamed and scrubbed: a capped GOP for seeking,
+# audio preserved. crf 26 targets the upper visually-transparent range rather
+# than the web-streaming point (crf ~28-38); whether it reaches the visually
+# lossless goal is unmeasured, and the derivative is re-derivable, so the
+# final value also comes from the corpus measurement tracked in the issue
+# above.
 PLAYBACK_ENCODING = EncodingParameters(
-    quality=32,
+    quality=26,
     cpu_preset=8,
     nvenc_preset="p5",
     pixel_format="yuv420p",
