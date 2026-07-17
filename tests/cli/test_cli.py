@@ -7,6 +7,7 @@ from pathlib import Path
 from typer.testing import CliRunner, Result
 
 from mosaic_media.cli import app
+from mosaic_media.probe.probe import probe_media
 
 runner = CliRunner()
 
@@ -64,6 +65,31 @@ def test_transcode_of_a_clean_file_reports_a_no_op(
     assert result.exit_code == 0, result.output
     assert "nothing to do" in result.output
     assert not destination.exists()
+
+
+def test_transcode_happy_path_writes_the_derivative(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # cfr_mp4 carries a tail moov, so the playback target performs the
+    # faststart remux: the app must write the derivative and name the
+    # operation, not just report no-ops and errors.
+    destination = tmp_path / "out.mp4"
+    result = runner.invoke(
+        app,
+        [
+            "transcode",
+            str(clips["cfr_mp4"]),
+            "--target",
+            "playback",
+            "--output",
+            str(destination),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "wrote" in result.output
+    assert "remux_faststart" in result.output
+    assert destination.exists()
+    assert probe_media(destination).moov_at_start is True
 
 
 def test_transcode_of_a_missing_file_exits_nonzero(tmp_path: Path) -> None:

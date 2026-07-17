@@ -1,5 +1,6 @@
 """Converter acceptance: the transcoded output re-probes clean on both verdicts."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from mosaic_media.transcode import (
     run_transcode,
 )
 from mosaic_media.transcode import convert as convert_module
+from tests.helpers.media_fixtures import build
 
 # libsvtav1 is a system-ffmpeg build option; skip the re-encode acceptance tests
 # with an actionable message when it is absent. The copy-remux tests do not need it.
@@ -31,6 +33,29 @@ requires_svtav1 = pytest.mark.skipif(
         "with --enable-libsvtav1 to run the AV1 re-encode acceptance tests"
     ),
 )
+
+
+def _audio_codec(path: Path) -> str:
+    """The output's first audio stream codec, straight from ffprobe."""
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    return result.stdout.strip()
 
 
 def transcode(
@@ -199,6 +224,88 @@ def test_h264_in_avi_rewraps_into_a_supported_container(
     assert result.output_facts.codec_name == "h264"
     assert result.output_verdict is not None
     assert result.output_verdict.stream_transcode is None
+
+
+def test_rerunning_a_transcode_replaces_the_existing_output(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # "Re-running the same transcode replaces its output atomically": seed the
+    # destination with bytes that are not a video; the rerun must leave a
+    # clean derivative and no temporary file, never the stale bytes.
+    source = clips["cfr_mp4"]
+    destination = tmp_path / "out.mp4"
+    first = transcode(source, destination, "playback", PLAYBACK_ENCODING)
+    assert first.performed
+    _ = destination.write_bytes(b"stale bytes that are not a video")
+    second = transcode(source, destination, "playback", PLAYBACK_ENCODING)
+    assert second.performed
+    assert second.output_path == destination.absolute()
+    assert probe_media(destination).moov_at_start is True
+    assert [entry.name for entry in tmp_path.iterdir()] == ["out.mp4"]
+
+
+def test_playback_remux_preserves_the_audio_track(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # audio_mp4 carries an aac track and a tail moov: the playback fix is the
+    # faststart remux, and the audio stream must survive it end to end.
+    source = clips["audio_mp4"]
+    assert probe_media(source).has_audio is True
+    result = transcode(source, tmp_path / "out.mp4", "playback", PLAYBACK_ENCODING)
+    assert result.performed
+    assert result.operation is Operation.REMUX_FASTSTART
+    assert result.output_facts is not None
+    assert result.output_facts.has_audio is True
+    assert result.output_path is not None
+    assert _audio_codec(result.output_path) == "aac"
+
+
+@requires_svtav1
+def test_reencode_carries_the_audio_track_as_aac(
+    clips: dict[str, Path],
+    tmp_path_factory: pytest.TempPathFactory,
+    tmp_path: Path,
+) -> None:
+    # A rotated source with audio forces the AV1 re-encode path with
+    # keep_audio: the audio must come out the other side as aac, proving the
+    # -c:a argv end to end rather than by construction.
+    root = tmp_path_factory.mktemp("rotated_audio")
+    source = build(
+        root / "rotated_audio.mp4",
+        "-c",
+        "copy",
+        source=["-display_rotation", "90", "-i", str(clips["audio_mp4"])],
+    )
+    facts = probe_media(source)
+    assert facts.rotation_degrees == 90
+    assert facts.has_audio is True
+    result = transcode(source, tmp_path / "out.mp4", "playback", PLAYBACK_ENCODING)
+    assert result.performed
+    assert result.operation is Operation.REENCODE_AV1
+    assert result.output_facts is not None
+    assert result.output_facts.has_audio is True
+    assert result.output_path is not None
+    assert _audio_codec(result.output_path) == "aac"
+
+
+def test_raw_h264_remuxes_into_measured_timing(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # A raw elementary stream fires unreliable_timing_metadata (timing is
+    # absent, not variable), selecting the timestamp-generating remux. The
+    # acceptance re-probe must then measure real, constant timing.
+    source = clips["raw_h264"]
+    source_facts = probe_media(source)
+    assert source_facts.timing_measured is False
+    result = transcode(source, tmp_path / "out.mp4", "analysis", ANALYSIS_ENCODING)
+    assert result.performed
+    assert result.operation is Operation.REMUX_TIMEBASE
+    assert result.output_facts is not None
+    assert result.output_facts.timing_measured is True
+    assert result.output_facts.constant_frame_rate is True
+    assert result.output_facts.frame_count == source_facts.frame_count
+    assert result.output_verdict is not None
+    assert result.output_verdict.analysis_transcode is None
 
 
 def test_a_still_red_playback_output_is_a_terminal_failure(
