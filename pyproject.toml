@@ -11,7 +11,7 @@ requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]
-io = ["numpy>=1.22"]
+io = ["numpy>=1.22", "av>=18,<19"]
 cli = ["typer>=0.12"]
 
 [project.scripts]
@@ -31,8 +31,9 @@ markers = [
 pythonVersion = "3.12"
 typeCheckingMode = "all"
 include = ["src", "tests"]
-# numpy (the [io] extra) and opencv-python (the bench group) leak Any/Unknown
-# through their public surfaces; that is not our code's problem.
+# numpy (the [io] extra), av (the [io] extra), and opencv-python (the bench
+# group) leak Any/Unknown through their public surfaces; that is not our
+# code's problem.
 reportAny = false
 reportMissingTypeStubs = false
 reportUnknownVariableType = false
