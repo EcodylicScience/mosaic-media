@@ -41,6 +41,10 @@ until the consumer migration removes the originals, so drift between the two
 copies stays detectable with a plain `diff`. Rewriting the assertions now
 would break that property for this file for a style-only gain.
 
+**Unblocked.** The consumer migration has deleted `mosaic_api`'s `media_probe`
+tests, so the diff-identical property no longer binds this file; the rewrite can
+proceed.
+
 ## What would close it
 
 After the consumer migration deletes `mosaic_api`'s `media_probe` tests:

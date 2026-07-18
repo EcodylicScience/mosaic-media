@@ -37,6 +37,11 @@ for a modest deduplication win. The window closes when `mosaic_api` and
 `mosaic` are rewired onto this package and the `mosaic_api/media_probe/`
 copy is deleted.
 
+**Unblocked.** The consumer migration has landed: `mosaic_api` is rewired onto
+this package and its `media_probe/` copy is deleted, and `mosaic` is rewired on
+its migration branch. The duplication window is closed; this consolidation can
+proceed.
+
 ## What would close it
 
 After the consumer migration lands: a core leaf module owning one

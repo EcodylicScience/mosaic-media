@@ -133,7 +133,9 @@ field is one logical change across two repositories, touching:
    which enumerate every fact and verdict column so a restore does not drop a
    sequence back to `probe_pending`.
 
-This fan-out is why the dependency stays an editable path source.
+This fan-out is why the dependency stays an editable path source. The
+`media_raw/index.csv` schema carries the same fact columns in a second
+persistence form; section 3.7 covers that coupling.
 
 ### 3.4 Frame access (io): nothing to migrate, and no extra to add
 
@@ -228,6 +230,68 @@ Remaining in mosaic_api, rewired only:
 Renaming `tests/media_probe/` to the retained package name from section 4
 keeps the directory naming what it still tests.
 
+### 3.7 The index.csv column coupling
+
+`src/mosaic_api/upload/finalize.py` wraps mosaic's `Dataset.index_media` to
+rewrite `media_raw/index.csv` on every upload finalize, so the CSV index is a
+second persistence schema that must track the columns the probe emits -- the
+`media_raw/index.csv` analogue of the `FACT_FIELDS` coupling in section 3.3,
+and the reason that section's fan-out is not the whole story.
+
+On the `mosaic-media-migration` branch `index_media` writes the full media
+index schema. `mosaic.core.dataset.MEDIA_INDEX_COLUMNS` (21 columns) now ends
+its display columns with `mosaic.core.media._facts_columns.FACTS_COLUMNS`
+(seven columns) before `video_order`: `frame_count`, `analysis_transcode`,
+`stream_transcode`, `analysis_derivative_path`, `playback_derivative_path`,
+`source_path`, and `media_facts` -- the whole `MediaFacts` serialized as JSON
+for `facts=` injection. The two derivative-path columns are per-target:
+analysis and playback derivatives are independent and never share a cell, and
+`index_media` carries an existing index's derivative links forward across a
+re-probe (`_carry_forward_derivative_links`).
+
+`finalize.py` undoes all of it. `write_index` calls `index_media` (full
+schema), reads the rows back, merges them with the preserved rows for the
+other sequences, then rewrites through `write_index_rows`, whose
+`csv.DictWriter` is pinned to a local `INDEX_COLUMNS` list -- the fourteen
+pre-migration columns only -- and whose
+`{column: row.get(column, "") for column in INDEX_COLUMNS}` projection drops
+every key not in that list. The seven columns `index_media` wrote a few lines
+earlier are erased on every API-managed finalize.
+
+Both migration features that depend on these columns are defeated until this
+is fixed:
+
+- `media_facts` injection (the no-re-probe metadata authority, and raw `.h264`
+  reads) has no persisted facts to inject.
+- The three-way transcode routing (`analysis_derivative_path` /
+  `playback_derivative_path` / `source_path`) is erased, so
+  `Dataset.resolve_media` cannot find a transcoded derivative and a per-frame
+  read falls back to the defective original -- which now raises loudly rather
+  than degrading silently.
+
+The fix: drive `write_index_rows` off mosaic's authority instead of a parallel
+copy. Import `MEDIA_INDEX_COLUMNS` from `mosaic.core.dataset` (the module
+finalize.py already imports `Dataset` and `new_dataset_manifest` from), delete
+the local `INDEX_COLUMNS`, and write the union of `MEDIA_INDEX_COLUMNS` and any
+extra keys present in the rows in a stable order (the authority's order, then
+any appended extras), so the writer never narrows a row. A future schema
+addition in mosaic then survives finalize with no mosaic_api change -- the
+parallel list that silently drifted behind mosaic's schema is exactly what
+caused this. Do not re-hardcode the seven names into a longer literal; that
+reintroduces the drift. The tests that build fixture rows from
+`finalize.INDEX_COLUMNS` (`test_video_order_registration.py`,
+`test_finalize.py`, `test_sequence_atomic_finalize.py`,
+`tests/helpers/finalize_fakes.py`) reference the imported authority the same
+way after the swap.
+
+This is not a moved-symbol rewire, so it is independent of the media_probe
+deletion (sections 3.1-3.6): it depends only on `mosaic.core.dataset`, already
+a dependency, and can land as the first mosaic_api change of this migration.
+It is the merge gate. mosaic's `mosaic-media-migration` branch and this
+finalize change must ship in sync; merging mosaic to main first ships a
+metadata-authority and transcode-routing feature the primary consumer strips
+on every upload.
+
 ## 4. The deletion
 
 Goes away from `src/mosaic_api/media_probe/`: `boxes.py`, `candidates.py`,
@@ -307,6 +371,14 @@ pipeline (ruff format, ruff check, basedpyright, pytest -- full runs
 serialized per the repository's conventions) is worth running after steps 2,
 3, and 4.
 
+One change sits outside this ordering and gates the mosaic merge: making
+`finalize.py` track the media index schema so it stops stripping the fact
+columns (section 3.7). It depends only on `mosaic.core.dataset`, already a
+dependency, not on any moved symbol, so it can land first and on its own,
+before the dependency rewire -- and it must land before (or with) the mosaic
+`mosaic-media-migration` merge, or every upload finalize strips the columns
+that branch just started writing.
+
 1. **Wire the dependency** (section 2): pyproject, `uv sync`, lock file.
    Verify `uv run python -c "import mosaic_media"` and that the fresh
    subprocess pulls neither numpy nor typer.
@@ -355,16 +427,19 @@ serialized per the repository's conventions) is worth running after steps 2,
   falling back to the CPU encoder. Irrelevant to this migration (no transcode
   call sites), binding for the future job wiring: until the issue closes,
   wire transcode jobs with `allow_hardware=False` or accept the loud failure.
-- **`index.csv` re-measures metadata upstream.**
-  `src/mosaic_api/upload/finalize.py:346` calls `mosaic`'s
-  `Dataset.index_media`, whose width, height, fps, and codec columns come
-  from the toolkit's OpenCV-based `get_video_metadata` -- a re-measurement of
-  facts the backend already holds, and exactly the measurement path the
-  metadata-authority invariant exists to eliminate. The fix is the toolkit's
-  own adoption (the toolkit migration, rewiring `get_video_metadata` onto
-  the probe); this migration cannot fix it from mosaic_api. Until then,
-  expect index.csv metadata to occasionally disagree with the stored
-  `MediaFacts`, and treat the database columns as authoritative.
+- **`index.csv` now carries authoritative facts** (was: re-measured via
+  OpenCV). On the `mosaic-media-migration` branch `Dataset.index_media` probes
+  through `mosaic_media.probe_media`, not the toolkit's former OpenCV
+  `get_video_metadata`, so `index.csv`'s width/height/fps/codec are the same
+  measurement the backend holds rather than a divergent re-measurement -- the
+  metadata-authority gap this bullet previously flagged is closed upstream.
+  What remains is the reverse: `finalize.py` strips the fact columns
+  `index_media` writes (section 3.7); fix that in sync with the mosaic merge.
+  The flat `analysis_transcode` / `stream_transcode` cells `index_media`
+  writes are derived with `DEFAULT_THRESHOLDS`, so the database verdict
+  columns (re-derived with the configured thresholds, section 3.2) stay
+  authoritative for the verdicts; the index's added value is the `media_facts`
+  JSON and the derivative-path routing links, not the flat verdict cells.
 - **The verdicts stay independent.** The rewire touches every place the two
   transcode verdicts flow (schemas, status endpoint, aggregation). Browser
   playback and per-frame analysis are independent questions with independent
