@@ -4,30 +4,13 @@ combined output, which is version-robust across click's stderr handling."""
 import json
 from pathlib import Path
 
-from typer.testing import CliRunner, Result
+from typer.testing import CliRunner
 
 from mosaic_media.cli import app
 from mosaic_media.probe.probe import probe_media
+from tests.cli.support import combined
 
 runner = CliRunner()
-
-
-def combined(result: Result) -> str:
-    """stdout and stderr together, tolerant of click's version differences.
-
-    Typer vendors its own click fork and re-exports the testing surface, so
-    `Result` comes from `typer.testing` rather than the (now optional,
-    possibly absent) `click` package. `Result.output` is stdout-only and error
-    text lands on `Result.stderr`; some click versions merge the streams and
-    raise on `Result.stderr` instead. Reading both defensively matches error
-    text on either.
-    """
-    text = result.output
-    try:
-        stderr = result.stderr
-    except ValueError:
-        stderr = ""
-    return text + (stderr or "")
 
 
 def test_probe_prints_parseable_json_with_expected_keys(clips: dict[str, Path]) -> None:

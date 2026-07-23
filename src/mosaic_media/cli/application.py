@@ -2,11 +2,13 @@
 the package facade in `__init__.py` stays standard library so a core-only
 install can report the missing extra instead of dying on the import.
 
-Two commands mirror the library: `probe` prints MediaFacts and both verdicts as
-JSON; `transcode` runs the minimum operation for a target and honors the opt-out
-semantics. Job infrastructure calls the Python API directly, never this CLI --
-structured exceptions, no argv escaping, no output parsing. `mosaic` mounts this
-app with `app.add_typer(media_app, name="media")`.
+Three commands mirror the library: `probe` prints MediaFacts and both verdicts
+as JSON; `compare` prints a duplication comparison as JSON and exits with the
+verdict as its exit code, so the command doubles as a shell test; `transcode`
+runs the minimum operation for a target and honors the opt-out semantics. Job
+infrastructure calls the Python API directly, never this CLI -- structured
+exceptions, no argv escaping, no output parsing. `mosaic` mounts this app with
+`app.add_typer(media_app, name="media")`.
 """
 
 import dataclasses
@@ -18,6 +20,8 @@ from typing import Annotated
 import typer
 
 from ..probe.errors import MediaProbeError
+from ..probe.facts import MediaFacts
+from ..probe.identity import DuplicateVerdict, compare_for_duplicate
 from ..probe.policy import CHROME_149, DEFAULT_THRESHOLDS, PlaybackProfile
 from ..probe.probe import probe_media
 from ..probe.verdict import derive
@@ -31,7 +35,10 @@ from ..transcode import (
 
 app = typer.Typer(
     name="mosaic-media",
-    help="Probe a video and run the minimum ffmpeg transcode its verdict calls for.",
+    help=(
+        "Probe a video, compare two videos for duplication, and run the "
+        "minimum ffmpeg transcode a verdict calls for."
+    ),
     no_args_is_help=True,
     add_completion=False,
 )
@@ -50,6 +57,21 @@ class Profile(str, enum.Enum):
 
 _PROFILES: dict[Profile, PlaybackProfile] = {Profile.chrome_149: CHROME_149}
 
+# The verdict is the exit code, so the command works as a shell test without
+# parsing stdout. 1 stays the probe-failure code the other commands use, and 2
+# is skipped because click already exits 2 on a usage error such as a mistyped
+# option -- a verdict there would be indistinguishable from it.
+COMPARE_EXIT_CODES: dict[DuplicateVerdict, int] = {
+    "duplicate": 0,
+    "distinct": 3,
+    "different_timing": 4,
+    "timing_unknown": 5,
+    # Unreachable here -- this command probes both files, so both always carry a
+    # digest. Mapped anyway so the lookup is total over the verdict type and a
+    # future caller cannot fall off it.
+    "unminted": 6,
+}
+
 
 def _json_default(value: object) -> object:
     if isinstance(value, (set, frozenset)):
@@ -60,21 +82,86 @@ def _json_default(value: object) -> object:
     raise TypeError(message)
 
 
+def _probe_or_exit(path: Path) -> MediaFacts:
+    """Probe PATH or exit 1 with a message naming which file failed.
+
+    Shared by every command that probes: on a two-file command such as
+    `compare`, a message without the path cannot tell the caller which side
+    failed.
+    """
+    try:
+        return probe_media(path)
+    except MediaProbeError as exc:
+        message = f"probe failed for {path}: {exc}"
+        typer.echo(message, err=True)
+        raise typer.Exit(code=1) from exc
+
+
 @app.command()
 def probe(file: Path) -> None:
     """Probe FILE and print its MediaFacts and both verdicts as JSON on stdout."""
-    try:
-        facts = probe_media(file)
-    except MediaProbeError as exc:
-        message = f"probe failed: {exc}"
-        typer.echo(message, err=True)
-        raise typer.Exit(code=1) from exc
+    facts = _probe_or_exit(file)
     verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
     document = {
         "facts": dataclasses.asdict(facts),
         "verdict": dataclasses.asdict(verdict),
     }
     typer.echo(json.dumps(document, default=_json_default, indent=2, sort_keys=True))
+
+
+@app.command()
+def compare(
+    left: Path,
+    right: Path,
+    fps_tolerance: Annotated[
+        float | None,
+        typer.Option(
+            "--fps-tolerance",
+            help=(
+                "Absolute frames-per-second tolerance. Omit to derive it from "
+                "the reference file's duration, which is correct unless you "
+                "have a specific reason to override it."
+            ),
+        ),
+    ] = None,
+    duration_tolerance: Annotated[
+        float | None,
+        typer.Option(
+            "--duration-tolerance",
+            help="Absolute duration tolerance in seconds. Omit to derive it.",
+        ),
+    ] = None,
+) -> None:
+    """Report whether LEFT and RIGHT are the same video, as JSON and an exit code.
+
+    Probes both files. The ingestion pathway compares stored facts instead and
+    never re-probes; this command takes paths for ad-hoc use. LEFT is the
+    reference: both tolerances are derived from it, so the comparison is not
+    symmetric when the two files' durations differ.
+
+    The verdict is also the exit code: duplicate is 0, distinct is 3,
+    different_timing is 4, and timing_unknown is 5. 1 is the probe-failure
+    code the other commands use, and 2 is skipped because click already exits
+    2 on a usage error such as a mistyped option.
+    """
+    left_facts = _probe_or_exit(left)
+    right_facts = _probe_or_exit(right)
+
+    comparison = compare_for_duplicate(
+        left_facts,
+        right_facts,
+        fps_tolerance=fps_tolerance,
+        duration_tolerance=duration_tolerance,
+    )
+    typer.echo(
+        json.dumps(
+            dataclasses.asdict(comparison),
+            default=_json_default,
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    raise typer.Exit(code=COMPARE_EXIT_CODES[comparison.verdict])
 
 
 @app.command()
@@ -113,12 +200,7 @@ def transcode(
     ] = False,
 ) -> None:
     """Transcode FILE for the analysis or playback target, running the minimum operation."""
-    try:
-        facts = probe_media(file)
-    except MediaProbeError as exc:
-        message = f"probe failed: {exc}"
-        typer.echo(message, err=True)
-        raise typer.Exit(code=1) from exc
+    facts = _probe_or_exit(file)
 
     playback_profile = _PROFILES[profile]
     verdict = derive(facts, playback_profile, DEFAULT_THRESHOLDS)
