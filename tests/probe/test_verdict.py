@@ -32,6 +32,9 @@ CLEAN = MediaFacts(
     moov_at_start=True,
     max_keyframe_interval_frames=25,
     max_gop_bytes=100_000,
+    timing_measured=True,
+    video_uuid="6ba7b810-9dad-81d1-80b4-00c04fd430c8",
+    content_digest="0123456789abcdef0123456789abcdef",
 )
 
 

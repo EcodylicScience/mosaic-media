@@ -10,6 +10,14 @@ standard library only; the frame reader (`[io]`, numpy) and the command line app
 from .probe.candidates import VIDEO_EXTENSIONS, is_candidate_video
 from .probe.errors import MediaProbeError
 from .probe.facts import MediaFacts
+from .probe.identity import (
+    DRIFT_SAFETY,
+    TIMESTAMP_QUANTUM_SECONDS,
+    DuplicateComparison,
+    DuplicateVerdict,
+    compare_for_duplicate,
+    timing_tolerance,
+)
 from .probe.policy import (
     CHROME_149,
     DEFAULT_THRESHOLDS,
@@ -35,9 +43,13 @@ from .thumbnail import downscale_to_jpeg, extract_first_frame, thumbnail_dimensi
 __all__ = [
     "CHROME_149",
     "DEFAULT_THRESHOLDS",
+    "DRIFT_SAFETY",
     "HARD_STREAM_REASONS",
+    "TIMESTAMP_QUANTUM_SECONDS",
     "VIDEO_EXTENSIONS",
     "AnalysisReason",
+    "DuplicateComparison",
+    "DuplicateVerdict",
     "MeasuredVideoProperties",
     "MediaFacts",
     "MediaProbeError",
@@ -49,6 +61,7 @@ __all__ = [
     "Verdict",
     "VideoProperties",
     "canonical_fps",
+    "compare_for_duplicate",
     "derive",
     "downscale_to_jpeg",
     "extract_first_frame",
@@ -56,5 +69,6 @@ __all__ = [
     "measured_or_none",
     "probe_media",
     "thumbnail_dimensions",
+    "timing_tolerance",
     "uniform_properties",
 ]

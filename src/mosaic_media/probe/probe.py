@@ -6,6 +6,7 @@ from .boxes import moov_at_start
 from .facts import MediaFacts
 from .ffprobe import read_header, scan_packets
 from .gop import measure_gop
+from .identity import mint_identity
 from .policy import DEFAULT_THRESHOLDS, Thresholds
 from .timing import measure_timing
 
@@ -41,6 +42,8 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
         max_instantaneous_fps = timing.max_instantaneous_fps
         timing_measured = True
 
+    identity = mint_identity(header, packets, timing_measured=timing_measured)
+
     return MediaFacts(
         container=header.container,
         codec_name=header.codec_name,
@@ -68,4 +71,6 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
         max_keyframe_interval_frames=gop.max_keyframe_interval_frames,
         max_gop_bytes=gop.max_gop_bytes,
         timing_measured=timing_measured,
+        video_uuid=identity.video_uuid,
+        content_digest=identity.content_digest,
     )

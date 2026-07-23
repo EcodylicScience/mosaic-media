@@ -3,7 +3,12 @@ from pathlib import Path
 import pytest
 
 from mosaic_media.probe.errors import MediaProbeError
-from mosaic_media.probe.ffprobe import read_header, scan_packets
+from mosaic_media.probe.ffprobe import (
+    PAYLOAD_HASH_ALGORITHM,
+    read_header,
+    scan_command,
+    scan_packets,
+)
 
 
 def test_header_reads_container_codec_and_measured_geometry(
@@ -86,35 +91,26 @@ def test_scan_packets_prefers_pts_when_both_are_present(
     assert source == "pts"
 
 
-def test_packet_csv_column_order_is_pts_dts_size_pos_flags(
+def test_packet_csv_column_order_is_pts_dts_size_pos_flags_data_hash(
     clips: dict[str, Path],
 ) -> None:
     # ffprobe emits -show_entries fields in its own natural order, not the order
     # requested. If a future ffmpeg reorders them the parser silently mis-reads
-    # a column. This test is the canary for the five-field scan.
+    # a column. This test is the canary for the six-field scan, and it issues
+    # the same command scan_packets does so the two can never diverge.
     import subprocess
 
-    command = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        "v:0",
-        "-show_entries",
-        "packet=pts_time,dts_time,size,pos,flags",
-        "-of",
-        "csv=p=0",
-        str(clips["cfr_mp4"]),
-    ]
+    command = scan_command(clips["cfr_mp4"], video_position=0)
     first = subprocess.run(
         command, capture_output=True, text=True, timeout=60
     ).stdout.splitlines()[0]
     columns = first.split(",")
-    assert len(columns) == 5
+    assert len(columns) >= 6  # not == 6: MPEG-TS appends a seventh
     assert float(columns[0]) >= 0.0  # pts_time
     assert columns[2].isdigit()  # size
     assert columns[3].lstrip("-").isdigit()  # pos
     assert "K" in columns[4] or "_" in columns[4]  # flags
+    assert columns[5].startswith(f"{PAYLOAD_HASH_ALGORITHM}:")  # data_hash
 
 
 def test_scan_packets_populates_byte_offset(clips: dict[str, Path]) -> None:
@@ -125,3 +121,38 @@ def test_scan_packets_populates_byte_offset(clips: dict[str, Path]) -> None:
     assert all(packet.pos >= 0 for packet in packets)
     # Positions are distinct: no two packets share a byte offset.
     assert len({packet.pos for packet in packets}) == len(packets)
+
+
+def test_scan_packets_populates_payload_hash(clips: dict[str, Path]) -> None:
+    packets, _source = scan_packets(clips["cfr_mp4"], video_position=0)
+    assert packets
+    for packet in packets:
+        assert packet.data_hash.startswith("CRC32:")
+        assert len(packet.data_hash) > len("CRC32:")
+
+
+def test_scan_packets_populates_payload_hash_on_awkward_containers(
+    clips: dict[str, Path],
+) -> None:
+    # no_pts_avi reports pts_time=N/A and raw_h264 reports both timestamps
+    # absent. Both must still carry a payload hash: the column is positional and
+    # independent of which timestamp survived. mpegts_ts exercises the seven-
+    # column row the row guard tolerates.
+    for name in ("no_pts_avi", "raw_h264", "mjpeg_avi", "vp8_webm", "mpegts_ts"):
+        packets, _source = scan_packets(clips[name], video_position=0)
+        assert packets, name
+        assert all(packet.data_hash.startswith("CRC32:") for packet in packets), name
+
+
+def test_scan_packets_names_a_missing_payload_hash_column(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An ffprobe that accepts the flag but does not report the data_hash entry
+    # emits five columns. Every row is then unusable, and the failure must name
+    # the cause rather than claiming the file has no packets.
+    def five_column_rows(_command: list[str], _timeout: int, _action: str) -> str:
+        return "0.000000,0.000000,3837,48,K__\n0.040000,0.040000,120,3885,___\n"
+
+    monkeypatch.setattr("mosaic_media.probe.ffprobe._run", five_column_rows)
+    with pytest.raises(MediaProbeError, match="does not report data_hash"):
+        _ = scan_packets(tmp_path / "any.mp4", video_position=0)

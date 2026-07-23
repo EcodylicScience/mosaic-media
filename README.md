@@ -231,6 +231,14 @@ human to see, and nothing retries -- the same deterministic command on the
 same input would reproduce the same red output. Retries are reserved for
 transient faults such as a killed subprocess or a full disk.
 
+A transcode changes the pixels and therefore every measured fact, so the
+derivative's identity shares nothing with its source's and no hash can recover
+the link. `TranscodeResult` carries `source_video_uuid` for that reason -- the
+source's `video_uuid`, recorded on the result (on the no-op branch too, since it
+describes the input either way). It is the move-resilient form of a
+source-to-derivative edge a consumer may also track by path; a caller that wants
+it persisted stores it alongside the derivative's own facts.
+
 ### Why AV1 and not H.264
 
 AV1 is the current choice, not a settled constant -- the discussion stays
@@ -273,6 +281,7 @@ app.add_typer(media_app, name="media")
 ```bash
 mosaic media probe video.mp4
 mosaic media transcode video.mp4 --target playback --output media/
+mosaic media compare left.mp4 right.mp4
 ```
 
 `--output` takes a file path or an existing directory (the filename then
@@ -281,6 +290,24 @@ over the source and refuses a file destination that does not end in `.mp4`;
 re-running the same transcode replaces its output atomically. The package
 knows no dataset layout -- a convention like `media_raw/` for originals and
 `media/` for derivatives belongs to the caller, like every other policy.
+
+`compare` probes both files and prints the `DuplicateComparison` as JSON, for
+ad-hoc use; the ingestion pathway compares stored facts and never re-probes. Its
+verdict is also the exit code, so it works as a shell test without parsing
+stdout:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | duplicate |
+| 1 | a probe failed on either file |
+| 3 | distinct |
+| 4 | different timing |
+| 5 | timing unknown |
+
+Exit 2 is left to the CLI framework's usage error, so a mistyped option is never
+mistaken for a verdict. `--fps-tolerance` and `--duration-tolerance` override
+the derived defaults; the left file is the reference the tolerances are computed
+from.
 
 Job infrastructure calls the Python API (`run_transcode`) rather than the CLI:
 structured exceptions, no argv escaping, no output parsing. The CLI exists for
@@ -301,6 +328,54 @@ that is already analysis-clean is never re-encoded, so downstream code cannot
 assume canonically written bytes -- re-probing with OpenCV would reintroduce
 the false-positive variable-rate detection and unreliable frame counts this
 package exists to avoid.
+
+
+## Video identity
+
+The probe derives two values per file, both `MediaFacts` fields, so they travel
+with the rest of the metadata and are minted once at ingestion. They answer
+different questions and are not interchangeable.
+
+| | `video_uuid` | `content_digest` |
+| --- | --- | --- |
+| Pins | coded content and exact timing | coded content only |
+| Survives | faststart, moov relocation, a tag edit, a same-container repack | all of those, plus an mp4/mkv repack |
+| Changes on | a re-encode, a retime, a truncation, a container change | a re-encode, a truncation, a bitstream reframing |
+| Use for | naming, hash chains, derived paths, cache keys | duplicate candidate lookup |
+| Never use for | duplicate detection | naming, or anything a chain consumes |
+
+Both are built from a per-packet payload hash the packet scan now reads through
+ffprobe's `-show_data_hash`, not from a decoded frame and not from a file
+checksum. `content_digest` hashes the codec-level facts and every packet's size,
+keyframe flag, and payload hash; `video_uuid` folds the packet timestamps on top
+and is emitted as an RFC 9562 UUIDv8.
+
+`video_uuid` is the only value safe to compare for identity or to name anything.
+Because it hashes the timestamps, **a container change moves it, and a directory
+named from it is not recoverable across one -- not even by repacking back**:
+Matroska quantizes timestamps to milliseconds and MPEG-TS rebases onto the first
+program clock reference, and returning to the original container inherits that
+quantization rather than undoing it.
+
+`content_digest` survives those container rewrites, but only where they preserve
+the elementary stream. It is not invariant across a bitstream reframing: an mp4
+to MPEG-TS repack applies Annex B conversion, which changes the coded bytes
+themselves, so the digest changes with them. Canonicalizing that away would need
+a per-codec bitstream parser, which the standard-library core cannot host.
+
+To find duplicates, group by `content_digest` and call `compare_for_duplicate`
+on the members of a group. It compares the timing floats with a duration-scaled
+tolerance and returns one of five verdicts -- duplicate, different timing,
+timing unknown, unminted, or distinct. Consumers do not reimplement that
+comparison; a tolerance test written downstream is a tolerance test written
+wrongly, which is why it is exported.
+
+The payload read is the cost: the scan now reads every packet's payload rather
+than only its header, measured at roughly 1.5x to 2x the previous scan on a
+large file (provisional, pending measurement on a real corpus). It is paid once,
+at the ingestion probe. `-show_data_hash` needs no newer ffprobe than the
+package already requires -- it shipped in FFmpeg 2.4, well below the 5.1 runtime
+floor.
 
 
 ## Extraction boundary

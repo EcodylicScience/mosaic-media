@@ -152,6 +152,33 @@ def test_a_clean_analysis_source_is_a_no_op(
     assert not destination.exists()
 
 
+def test_the_no_op_branch_records_the_source_video_uuid(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # The no-op branch returns every optional field as None, but this one is not
+    # optional: it describes the input, and the input facts are in hand here.
+    source = clips["faststart_mp4"]
+    result = transcode(source, tmp_path / "out.mp4", "analysis", ANALYSIS_ENCODING)
+    assert result.performed is False
+    assert result.source_video_uuid == probe_media(source).video_uuid
+    assert result.source_video_uuid != ""
+
+
+@requires_svtav1
+def test_a_performed_transcode_records_the_source_video_uuid(
+    corpus_vfr: Path, tmp_path: Path
+) -> None:
+    # The derivative's own facts are freshly probed and share nothing with the
+    # source's, which is exactly why the edge has to be carried rather than
+    # recomputed.
+    source_uuid = probe_media(corpus_vfr).video_uuid
+    result = transcode(corpus_vfr, tmp_path / "out.mp4", "analysis", ANALYSIS_ENCODING)
+    assert result.performed is True
+    assert result.source_video_uuid == source_uuid
+    assert result.output_facts is not None
+    assert result.output_facts.video_uuid != source_uuid
+
+
 def test_output_directory_derives_a_filename_from_the_source_stem(
     clips: dict[str, Path], tmp_path: Path
 ) -> None:

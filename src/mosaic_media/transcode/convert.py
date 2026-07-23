@@ -106,6 +106,11 @@ class TranscodeResult:
     # Playback only: the output plays but still carries a soft reason. Not a
     # failure; surfaced so a caller can report the transcode was optional.
     residual_recommended: bool
+    # The input's identity, carried because no hash of the output can recover
+    # it: a transcode changes the pixels and therefore every measured fact.
+    # Populated on the no-op branch too -- it describes the input, not the
+    # output, and the input facts are in hand there.
+    source_video_uuid: str
 
 
 def _parse_reading(value: str | None) -> float | None:
@@ -358,6 +363,7 @@ def run_transcode(
             output_verdict=None,
             reasons_addressed=frozenset(),
             residual_recommended=False,
+            source_video_uuid=facts.video_uuid,
         )
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -414,4 +420,5 @@ def run_transcode(
         output_verdict=output_verdict,
         reasons_addressed=command.reasons,
         residual_recommended=residual_recommended,
+        source_video_uuid=facts.video_uuid,
     )

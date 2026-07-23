@@ -48,6 +48,7 @@ import mosaic_media.probe.errors
 import mosaic_media.probe.facts
 import mosaic_media.probe.ffprobe
 import mosaic_media.probe.gop
+import mosaic_media.probe.identity
 import mosaic_media.probe.policy
 import mosaic_media.probe.probe
 import mosaic_media.probe.sequence

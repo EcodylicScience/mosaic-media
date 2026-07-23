@@ -1,7 +1,9 @@
 """ffprobe subprocess wrappers. Standard library only.
 
-Two calls per file: one JSON header read, and one demultiplex-only packet scan.
-No frame is decoded.
+Two calls per file: one JSON header read, and one packet scan that
+demultiplexes the whole stream and reads each packet's payload to hash it. No
+frame is decoded -- the payload hash covers the demuxer-delivered bytes, not a
+decoded frame.
 """
 
 import json
@@ -13,7 +15,17 @@ from typing import Literal
 from .errors import MediaProbeError
 
 HEADER_TIMEOUT_SECONDS = 60
+# The scan reads every packet's payload to compute its hash, measured at
+# between 1.5x and 2x the unhashed scan on a 481 MB, 216000-packet file
+# (0.97 s against 1.74 s to 1.85 s across two serialized runs that disagreed
+# by 25 percent). 900 seconds is two orders of magnitude above that.
 SCAN_TIMEOUT_SECONDS = 900
+
+# The per-packet payload hash algorithm. Chosen on the identity collision
+# budget, not on cryptographic strength: the digests fold one hash per packet,
+# so accidental aliasing needs every packet to collide. Changing this changes
+# every minted digest.
+PAYLOAD_HASH_ALGORITHM = "CRC32"
 
 TimestampSource = Literal["pts", "dts", "none"]
 
@@ -44,10 +56,24 @@ class Header:
 
 @dataclass(frozen=True, slots=True)
 class Packet:
+    """One demultiplexed packet.
+
+    `data_hash` is the demuxer-delivered payload hash ffprobe reports, an
+    `ALGO:hexdigest` string. It is what the identity digests hash, rather than
+    bytes read at `pos`: byte offsets are container-relative and in Matroska
+    address the SimpleBlock header, not the payload.
+
+    It defaults to the empty string because the in-process scan in
+    `mosaic_media.io.packets` mirrors this one and does not populate it.
+    Identity is minted once by the probe at ingestion and never by the reader,
+    so the io layer has no reason to pay for the payload read.
+    """
+
     time: float
     size: int
     keyframe: bool
     pos: int
+    data_hash: str = ""
 
 
 def _run(command: list[str], timeout: int, action: str) -> str:
@@ -223,10 +249,32 @@ def read_header(path: Path) -> Header:
     )
 
 
+def scan_command(path: Path, video_position: int) -> list[str]:
+    """The packet-scan invocation, shared with the test that pins its column order."""
+    return [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        f"v:{video_position}",
+        "-show_data_hash",
+        PAYLOAD_HASH_ALGORITHM,
+        "-show_entries",
+        "packet=pts_time,dts_time,size,pos,flags,data_hash",
+        "-of",
+        "csv=p=0",
+        str(path.absolute()),
+    ]
+
+
 def scan_packets(
     path: Path, video_position: int
 ) -> tuple[tuple[Packet, ...], TimestampSource]:
     """Demultiplex the whole file, returning packets in decode order.
+
+    Reads every packet's payload as it demultiplexes, via `-show_data_hash`,
+    and carries the result forward as `Packet.data_hash`. No frame is decoded:
+    the hash covers the demuxer-delivered payload bytes, not a decoded frame.
 
     Prefers `pts_time`. Falls back to `dts_time` only when PTS is absent for
     every packet, which is what AVI commonly does. Without the fallback an
@@ -247,32 +295,27 @@ def scan_packets(
     more of the win than numpy would -- fewer requested fields, or parallel
     `array` buffers instead of objects -- and neither costs a dependency.
     """
-    command = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-select_streams",
-        f"v:{video_position}",
-        "-show_entries",
-        "packet=pts_time,dts_time,size,pos,flags",
-        "-of",
-        "csv=p=0",
-        str(path.absolute()),
-    ]
+    command = scan_command(path, video_position)
     raw = _run(command, SCAN_TIMEOUT_SECONDS, f"scanning the packets of {path}")
 
     pts_packets: list[Packet] = []
     dts_packets: list[Packet] = []
     untimed_packets: list[Packet] = []
+    rows_without_payload_hash = 0
     for line in raw.splitlines():
         # ffprobe emits the requested entries in its own natural order:
-        # pts_time, dts_time, size, pos, flags. Byte offset (pos) is N/A on
-        # containers that do not expose it; it is carried for io consumers and
-        # is not used by the timestamp-based seek path, so -1 is a safe unknown.
+        # pts_time, dts_time, size, pos, flags, data_hash. Byte offset (pos) is
+        # N/A on containers that do not expose it; it is carried for io
+        # consumers and is not used by the timestamp-based seek path, so -1 is a
+        # safe unknown. MPEG-TS appends a seventh empty side-data column, which
+        # does not move any index below it.
         columns = line.split(",")
-        if len(columns) < 5:
+        if len(columns) < 6:
+            if len(columns) >= 5:
+                rows_without_payload_hash += 1
             continue
         size_text, pos_text, flags = columns[2], columns[3], columns[4]
+        data_hash = columns[5]
         if not size_text.isdigit():
             continue
         size = int(size_text)
@@ -280,15 +323,33 @@ def scan_packets(
         keyframe = "K" in flags
         if columns[0] not in _ABSENT:
             pts_packets.append(
-                Packet(time=float(columns[0]), size=size, keyframe=keyframe, pos=pos)
+                Packet(
+                    time=float(columns[0]),
+                    size=size,
+                    keyframe=keyframe,
+                    pos=pos,
+                    data_hash=data_hash,
+                )
             )
         if columns[1] not in _ABSENT:
             dts_packets.append(
-                Packet(time=float(columns[1]), size=size, keyframe=keyframe, pos=pos)
+                Packet(
+                    time=float(columns[1]),
+                    size=size,
+                    keyframe=keyframe,
+                    pos=pos,
+                    data_hash=data_hash,
+                )
             )
         if columns[0] in _ABSENT and columns[1] in _ABSENT:
             untimed_packets.append(
-                Packet(time=0.0, size=size, keyframe=keyframe, pos=pos)
+                Packet(
+                    time=0.0,
+                    size=size,
+                    keyframe=keyframe,
+                    pos=pos,
+                    data_hash=data_hash,
+                )
             )
 
     if pts_packets:
@@ -297,5 +358,17 @@ def scan_packets(
         return tuple(dts_packets), "dts"
     if untimed_packets:
         return tuple(untimed_packets), "none"
+    if rows_without_payload_hash:
+        # Every row arrived without the payload-hash column. An ffprobe that
+        # does not know -show_data_hash exits non-zero and never reaches here;
+        # this is the quieter failure where the flag is accepted but the
+        # data_hash entry is dropped, since ffprobe ignores an unrecognized
+        # -show_entries name rather than failing. Naming it beats the generic
+        # "no packets" message, which would send a reader looking at the file.
+        message = (
+            f"ffprobe returned packets without payload hashes for {path}: "
+            "the installed ffprobe does not report data_hash"
+        )
+        raise MediaProbeError(message)
     message = f"no packets in the video stream of {path}"
     raise MediaProbeError(message)
