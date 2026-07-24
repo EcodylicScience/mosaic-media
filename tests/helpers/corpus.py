@@ -152,8 +152,9 @@ def scaled_frames(
     output pixel format (bgr24, or gray when grayscale=True). ffmpeg's scale
     default is bicubic, so this is the reference the reader's bicubic resize is
     checked against. Returned as raw pixel arrays -- not md5 digests -- because
-    the bundled-versus-system swscale skew forces a tolerance comparison on the
-    color path, which needs the pixels."""
+    scaling is arithmetic that may differ by a rounding step between the
+    bundled libav and the system ffmpeg, so the comparison is a tolerance
+    rather than an equality, which needs the pixels."""
     pixel_format = "gray" if grayscale else "bgr24"
     result = subprocess.run(
         [

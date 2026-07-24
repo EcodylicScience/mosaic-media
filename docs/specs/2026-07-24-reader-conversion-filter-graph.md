@@ -6,10 +6,12 @@ opened with a resize. Both build a fresh libswscale scaling context per frame.
 This spec replaces them with one libavfilter graph, built once per reader, that
 carries rotation, scaling, and pixel format together.
 
-The change is faster on every read path and, on the resized color path, more
-correct: the reader's resized bgr24 output currently differs from ffmpeg's
-`-vf scale` by up to 76 levels per channel, and through the graph it matches
-exactly.
+The change is faster on every read path this machine can measure, and on the
+resized color path it is more correct: the reader's resized bgr24 output
+currently differs from ffmpeg's `-vf scale` by up to 76 levels per channel, and
+through the graph it matches exactly. The one path whose net effect is not
+resolvable here is a rotation without a resize; "Output contiguity" records why
+and what was measured.
 
 ## Why the current path is slow
 
@@ -96,15 +98,32 @@ one.
 
 ## Output contiguity
 
-The reader returns C-contiguous arrays on every path today -- plain, grayscale,
-resized, and rotated. Graph output does not preserve that: libavfilter pads the
-line size, so transposed and scaled frames come back non-contiguous, and
-contiguity of unscaled output depends on whether the width happens to align.
+The reader is documented to return C-contiguous arrays on every path. It does
+not: a quarter-turn at 1920x1080 returns a non-contiguous array today, because
+the conversion allocates a line size of 3264 bytes for a 3240-byte row. Nothing
+catches it, because the only test asserting contiguity runs at 320x240, where
+the row length happens to align. Graph output pads on the same principle --
+contiguity depends on whether the output row length meets libavfilter's
+alignment, which quarter-turns and scaling commonly miss and full-width output
+commonly meets.
 
 The graph result is therefore passed through `numpy.ascontiguousarray`. It is a
 no-op returning the same array when the stride already matches, and copies when
-it does not. Both outcomes satisfy the frame contract; the measurements below
-include the copy wherever one is taken.
+it does not. Both outcomes satisfy the contract, and unlike the current code
+they satisfy it at every frame size. The copy is not avoidable: `buffersink`
+exposes no alignment option, and PyAV returns a strided view of a padded frame
+rather than copying, so this is the one copy on that path rather than a second
+one.
+
+That makes the rotated-unresized path the only one where this change adds work
+the current code was not doing -- and it adds it because the current code was
+skipping an obligation, not because the graph is slower. A like-for-like
+comparison against a parent forced to honor the same contract measured 1.11x in
+HEAD's favor, and a naive comparison against the parent as it stands measured
+1.03x, but neither number is trustworthy: each side drifted by more than a
+factor of two within its own seven rounds, a spread roughly ten times the effect.
+The honest statement is that this path's net cost is below what this machine can
+resolve. Do not quote a ratio for it.
 
 The remaining two guarantees hold through the graph without help. Consecutive
 reads do not alias: the array keeps the frame's buffer referenced, so

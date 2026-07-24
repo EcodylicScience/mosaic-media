@@ -1,14 +1,16 @@
 """Decoded frames are writable, C-contiguous, non-aliasing buffers.
 
-Consumers draw overlays directly onto returned frames. The array wraps the
-converted frame's own buffer, so numpy's OWNDATA flag is False by design; the
-contract that matters is writability, C-contiguity, and that consecutive
-reads never alias one another -- mutating one returned frame must not be able
-to corrupt another.
+Consumers draw overlays directly onto returned frames. Where the converted
+frame's line size already matches its width the array wraps that buffer
+directly; where the graph padded it, the array is an owned contiguous copy. The
+contract is the same either way, and it is what these tests pin: writability,
+C-contiguity, and that consecutive reads never alias one another -- mutating one
+returned frame must not be able to corrupt another.
 
-Every conversion path is covered, not just the plain one. Rotation and scaling
-pad the line size, so contiguity is the guarantee most at risk on exactly the
-paths a plain-path-only test leaves unchecked.
+Every conversion path is covered, not just the plain one. The graph pads the
+line size for scaled output and for the quarter-turn rotations, so contiguity is
+the guarantee most at risk on exactly the paths a plain-path-only test leaves
+unchecked.
 """
 
 from pathlib import Path

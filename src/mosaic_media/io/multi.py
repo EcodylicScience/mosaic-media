@@ -29,7 +29,7 @@ from .reader import VideoReader
 
 def _displayed_dimensions(facts: MediaFacts) -> tuple[int, int]:
     """The (width, height) a VideoReader emits for `facts`. The reader
-    autorotates through its transpose graph, so a quarter-turn source is
+    autorotates in its conversion graph, so a quarter-turn source is
     displayed with its coded width and height swapped. The sequence must record
     and compare that displayed orientation, not the coded one: an upright clip
     and a quarter-turned clip of equal coded size are uniform on the coded

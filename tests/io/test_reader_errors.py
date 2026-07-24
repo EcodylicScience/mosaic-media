@@ -50,6 +50,18 @@ def test_read_frames_after_close_raises(corpus_gop12: Path) -> None:
         _ = list(reader.read_frames([5, 6]))
 
 
+@pytest.mark.parametrize("resize", [(0, 0), (-5, -5), (160, 0)])
+def test_degenerate_resize_raises_at_construction(
+    corpus_gop12: Path, resize: tuple[int, int]
+) -> None:
+    # The scale filter reads a non-positive dimension as "keep the source
+    # size", so an unvalidated degenerate resize reads successfully while the
+    # reader reports geometry the emitted frames contradict. Construction must
+    # reject it rather than let that silent disagreement through.
+    with pytest.raises(MediaProbeError):
+        _ = VideoReader(corpus_gop12, resize=resize)
+
+
 def test_del_after_failed_init_does_not_raise(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

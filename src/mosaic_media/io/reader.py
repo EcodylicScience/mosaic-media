@@ -8,10 +8,12 @@ frames forward to the target, landing frame-exact -- there is no average-rate
 index-to-timestamp conversion to land off target the way OpenCV's
 CAP_PROP_POS_FRAMES does on variable-rate files (pinned by the seek suites,
 including the variable-rate one). The codec table is a tested invariant (the
-codec guard), not a trusted bundled binary. Rotation is applied in process
-through a libav filter graph (a transpose for the quarter-turns, hflip plus
-vflip for 180), golden-verified bit-exact against system-ffmpeg autorotation
-for every mapped rotation.
+codec guard), not a trusted bundled binary. Rotation, scaling, and the output
+pixel format are applied in process through one libav filter graph per reader (a
+transpose for the quarter-turns, hflip plus vflip for 180), golden-verified
+against system ffmpeg: bit-exact for rotation, and within a rounding step for
+scaling, where driving libswscale directly instead diverges on the chroma
+planes.
 """
 
 from collections.abc import Iterator, Sequence
@@ -95,6 +97,16 @@ class VideoReader:
         self._resize: tuple[int, int] | None = (
             None if resize is None else (int(resize[0]), int(resize[1]))
         )
+        if self._resize is not None and min(self._resize) <= 0:
+            # The scale filter reads a non-positive dimension as "keep the
+            # source size", so an unchecked degenerate resize would read
+            # successfully while the reported geometry disagreed with the
+            # emitted frames. Reject it at construction instead.
+            message = (
+                f"resize {self._resize} for {self._path} must have a positive "
+                "width and height"
+            )
+            raise MediaProbeError(message)
         self._grayscale: bool = bool(grayscale)
         # hwaccel is retained for signature compatibility and is a no-op: decode
         # is always software. No consumer requests hardware decode today, and the
@@ -111,7 +123,7 @@ class VideoReader:
         # then held so _read_current returns it rather than a second decode.
         self._pending_frame: VideoFrame | None = None
         self._rotation_degrees: int = 0
-        self._rotation_graph: Graph | None = None
+        self._conversion_graph: Graph | None = None
         self._mode: _ReaderMode = "idle"
         self._decoder_pos: int = 0  # next absolute source frame the decoder emits
         self._target: int = 0  # next absolute frame read() returns
@@ -187,12 +199,13 @@ class VideoReader:
             message = f"unsupported rotation {self._rotation_degrees} for {self._path}"
             raise MediaProbeError(message)
         if self._resize is not None:
-            # A resize wins over the rotation swap; the reformat runs after the
-            # transpose, so the output is exactly the requested (width, height).
+            # A resize wins over the rotation swap; the scale filter runs after
+            # the transpose, so the output is exactly the requested
+            # (width, height).
             out_width, out_height = self._resize
         elif self._rotation_degrees % 180 == 90:
             # A quarter-turn source is emitted in displayed orientation: the
-            # reader rotates each frame through the transpose graph, so displayed
+            # reader rotates each frame in its conversion graph, so displayed
             # width and height are the coded dimensions swapped. Reporting and
             # shaping in that orientation matches ffmpeg autorotation and cv2
             # auto-orientation; the byte count is unchanged (w*h*3 is symmetric),
@@ -260,50 +273,71 @@ class VideoReader:
             message = f"failed to decode {self._path}: {exc}"
             raise MediaProbeError(message) from exc
 
-    def _build_rotation_graph(self) -> Graph:
+    def _build_conversion_graph(self, geometry: _Geometry) -> Graph:
+        """Build the reader's one conversion graph: rotation, then scaling, then
+        the output pixel format.
+
+        Stage order is load-bearing. The transpose runs first so a quarter-turn
+        source is emitted in displayed orientation, and the scale runs after it
+        so a requested resize wins over the rotation dimension swap and the
+        output is exactly the requested size.
+
+        Scaling here rather than through VideoFrame.reformat is what keeps the
+        color path exact: reformat drives libswscale with different chroma plane
+        handling and lands up to 76 levels per channel away from ffmpeg's `-vf
+        scale`, while this filter is what ffmpeg itself runs.
+        """
         stream = self._stream
         if stream is None:
-            message = f"cannot build the rotation graph before opening {self._path}"
+            message = f"cannot build the conversion graph before opening {self._path}"
             raise MediaProbeError(message)
+        stages: list[tuple[str, str | None]] = list(
+            _ROTATION_FILTERS.get(self._rotation_degrees % 360, ())
+        )
+        if self._resize is not None:
+            # The scale filter already defaults to bicubic, matching ffmpeg's
+            # own -vf scale; setting it explicitly pins that against a
+            # libswscale default change. Bilinear drifts about 24 gray levels
+            # off the goldens.
+            scale_arguments = (
+                f"{geometry.out_width}:{geometry.out_height}:flags=bicubic"
+            )
+            stages.append(("scale", scale_arguments))
+        stages.append(("format", "gray" if self._grayscale else "bgr24"))
         graph = Graph()
-        buffer = graph.add_buffer(template=stream)
-        previous = buffer
-        for name, argument in _ROTATION_FILTERS[self._rotation_degrees % 360]:
+        previous = graph.add_buffer(template=stream)
+        for name, argument in stages:
             node = graph.add(name) if argument is None else graph.add(name, argument)
             previous.link_to(node)
             previous = node
         sink = graph.add("buffersink")
         previous.link_to(sink)
-        graph.configure()
-        self._rotation_graph = graph
+        try:
+            graph.configure()
+        except av.error.FFmpegError as exc:
+            message = f"failed to build the conversion graph for {self._path}: {exc}"
+            raise MediaProbeError(message) from exc
+        self._conversion_graph = graph
         return graph
 
     def _emit(self, geometry: _Geometry, frame: VideoFrame) -> numpy.ndarray:
-        # Rotate in process when the source carries a display rotation, then
-        # convert (and resize) to the reader's output pixel format. to_ndarray
-        # returns a writable, C-contiguous, non-aliasing uint8 array wrapping the
-        # reformatted frame's own buffer, so no extra copy is taken.
-        graph = self._rotation_graph
-        if graph is None and self._rotation_degrees % 360 != 0:
-            graph = self._build_rotation_graph()
-        if graph is not None:
-            graph.vpush(frame)
-            frame = graph.vpull()
-        pixel_format = "gray" if self._grayscale else "bgr24"
-        if self._resize is not None:
-            # Bicubic matches system ffmpeg's -vf scale default. av's own default
-            # is bilinear; leaving it unset regresses resized frames against the
-            # scale goldens (bilinear drifts ~24 gray levels where bicubic lands
-            # within one). Rotation and format-only reformats do not scale, so
-            # they take no interpolation.
-            reformatted = frame.reformat(
-                width=geometry.out_width,
-                height=geometry.out_height,
-                format=pixel_format,
-                interpolation="BICUBIC",
-            )
-            return reformatted.to_ndarray()
-        return frame.to_ndarray(format=pixel_format)
+        # The graph is built here rather than during geometry resolution because
+        # _ensure_ready does not open the container when probe facts are
+        # injected, and the buffer source is templated from the stream. By the
+        # first emit a frame has been decoded, so the container is open.
+        graph = self._conversion_graph
+        if graph is None:
+            graph = self._build_conversion_graph(geometry)
+        graph.vpush(frame)
+        converted = graph.vpull()
+        # to_ndarray takes no format argument: the graph already emits the
+        # output pixel format, and passing one would ask libswscale for a no-op
+        # conversion and rebuild a scaling context for every frame.
+        # ascontiguousarray is a no-op when the line size already matches and
+        # copies when the graph's line size exceeds the row length, which the
+        # quarter-turn rotations and scaling commonly cause and full-width
+        # output does not.
+        return numpy.ascontiguousarray(converted.to_ndarray())
 
     def _to_stream_offset(self, stream: VideoStream, keyframe_time: float) -> int:
         time_base = stream.time_base
@@ -478,6 +512,10 @@ class VideoReader:
             self._closed = True
             container = self._container
             self._container = None
+            # Released alongside the container: the graph holds a frame pool,
+            # which a closed but still referenced reader would otherwise keep
+            # alive. Every reader now builds one, not only the rotated ones.
+            self._conversion_graph = None
             if container is not None:
                 container.close()
 
