@@ -34,8 +34,21 @@ from typing import Literal
 from .facts import MediaFacts
 from .ffprobe import Header, Packet
 
-CONTENT_FORMAT_TAG = b"mosaic-media/content/1"
-VIDEO_FORMAT_TAG = b"mosaic-media/video/1"
+# The declared identity scheme, carried in both format tags. One number for
+# both: video_uuid hashes the content digest, so a change to what
+# content_digest_input serializes moves both values and a scheme that could say
+# otherwise would be lying. A change confined to video_uuid_input moves this
+# number too, re-minting content_digest along with it -- accepted, because one
+# probe mints both, so the re-mint costs the same scan either way, and
+# identity_scheme on the row says why a value moved. A bump re-mints every value
+# in every corpus, so it changes only when the hashed bytes change: an ffmpeg
+# upgrade that alters libavformat's demuxer output forces one without changing
+# this package's behavior at all. A bump is always a minor version bump of this
+# package (a major one after 1.0); the reverse does not hold.
+IDENTITY_SCHEME = "1"
+
+CONTENT_FORMAT_TAG = f"mosaic-media/content/{IDENTITY_SCHEME}".encode()
+VIDEO_FORMAT_TAG = f"mosaic-media/video/{IDENTITY_SCHEME}".encode()
 
 DIGEST_BYTES = 16
 

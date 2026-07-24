@@ -3,6 +3,7 @@ from dataclasses import replace
 import pytest
 
 from mosaic_media.probe.facts import MediaFacts
+from mosaic_media.probe.identity import IDENTITY_SCHEME
 from mosaic_media.probe.policy import CHROME_149, DEFAULT_THRESHOLDS
 from mosaic_media.probe.verdict import Verdict, derive
 
@@ -35,6 +36,8 @@ CLEAN = MediaFacts(
     timing_measured=True,
     video_uuid="6ba7b810-9dad-81d1-80b4-00c04fd430c8",
     content_digest="0123456789abcdef0123456789abcdef",
+    identity_scheme=IDENTITY_SCHEME,
+    prober_version="0.0.0-test Lavf0.0.0",
 )
 
 

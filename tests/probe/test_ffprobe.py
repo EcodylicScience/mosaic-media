@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 from mosaic_media.probe.errors import MediaProbeError
 from mosaic_media.probe.ffprobe import (
     PAYLOAD_HASH_ALGORITHM,
+    prober_version,
     read_header,
     scan_command,
     scan_packets,
@@ -158,3 +160,136 @@ def test_scan_packets_names_a_missing_payload_hash_column(
     )
     with pytest.raises(MediaProbeError, match="does not report data_hash"):
         _ = scan_packets(tmp_path / "any.mp4", video_position=0)
+
+
+def test_prober_version_names_the_program_and_libavformat() -> None:
+    value = prober_version()
+    program, _, libavformat = value.partition(" ")
+    assert program
+    assert libavformat.startswith("Lavf")
+
+
+def test_prober_version_is_read_once_per_process() -> None:
+    assert prober_version() is prober_version()
+
+
+def test_prober_version_names_a_missing_libavformat_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def without_libavformat(_command: list[str], **_keywords: object) -> str:
+        return '{"program_version": {"version": "7.0"}, "library_versions": []}'
+
+    # Cleared on both sides: warm, the body never runs and this passes against
+    # any implementation; left warm afterwards, the identity test above would
+    # measure a poisoned read.
+    prober_version.cache_clear()
+    monkeypatch.setattr(
+        "mosaic_media.probe.ffprobe.run_to_completion", without_libavformat
+    )
+    try:
+        with pytest.raises(MediaProbeError, match="libavformat"):
+            _ = prober_version()
+    finally:
+        prober_version.cache_clear()
+
+
+def test_prober_version_names_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    def not_json(_command: list[str], **_keywords: object) -> str:
+        return "not json"
+
+    prober_version.cache_clear()
+    monkeypatch.setattr("mosaic_media.probe.ffprobe.run_to_completion", not_json)
+    try:
+        with pytest.raises(MediaProbeError, match="invalid JSON"):
+            _ = prober_version()
+    finally:
+        prober_version.cache_clear()
+
+
+def test_prober_version_names_a_missing_program_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def without_program_version(_command: list[str], **_keywords: object) -> str:
+        library_versions = [{"name": "libavformat", "ident": "Lavf60.16.100"}]
+        return json.dumps({"library_versions": library_versions})
+
+    prober_version.cache_clear()
+    monkeypatch.setattr(
+        "mosaic_media.probe.ffprobe.run_to_completion", without_program_version
+    )
+    try:
+        with pytest.raises(MediaProbeError, match="no program version"):
+            _ = prober_version()
+    finally:
+        prober_version.cache_clear()
+
+
+def test_prober_version_does_not_mint_a_null_program_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A JSON null decoded by Python is None, and str(None) is the truthy
+    # string "None" -- a value that looks measured and is not. The leaf must
+    # be read through a type check, not coerced with str(...).
+    def null_version(_command: list[str], **_keywords: object) -> str:
+        library_versions = [{"name": "libavformat", "ident": "Lavf60.16.100"}]
+        return json.dumps(
+            {"program_version": {"version": None}, "library_versions": library_versions}
+        )
+
+    prober_version.cache_clear()
+    monkeypatch.setattr("mosaic_media.probe.ffprobe.run_to_completion", null_version)
+    try:
+        with pytest.raises(MediaProbeError, match="no program version"):
+            _ = prober_version()
+    finally:
+        prober_version.cache_clear()
+
+
+def test_prober_version_does_not_mint_a_null_libavformat_ident(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The companion to the null program version test, on the other leaf. Every
+    # other ident in this module is either the valid string or absent through
+    # an empty library_versions list, which raises before ever reaching the
+    # isinstance narrowing on raw_ident -- so only an explicit null here
+    # exercises that check.
+    def null_ident(_command: list[str], **_keywords: object) -> str:
+        library_versions = [{"name": "libavformat", "ident": None}]
+        return json.dumps(
+            {
+                "program_version": {"version": "7.0"},
+                "library_versions": library_versions,
+            }
+        )
+
+    prober_version.cache_clear()
+    monkeypatch.setattr("mosaic_media.probe.ffprobe.run_to_completion", null_ident)
+    try:
+        with pytest.raises(MediaProbeError, match="libavformat"):
+            _ = prober_version()
+    finally:
+        prober_version.cache_clear()
+
+
+def test_prober_version_names_a_non_dict_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A JSON top-level list. Without the isinstance(decoded, dict) guard,
+    # payload.get(...) below would be list.get(...) and raise AttributeError,
+    # which escapes every except MediaProbeError in every consumer -- the one
+    # failure mode this function exists to prevent. The message matches the
+    # missing-program-version test because both detect the same absence; this
+    # test's job is to prove the non-dict branch is what produces it here,
+    # not the dict branch.
+    def non_dict_payload(_command: list[str], **_keywords: object) -> str:
+        return "[]"
+
+    prober_version.cache_clear()
+    monkeypatch.setattr(
+        "mosaic_media.probe.ffprobe.run_to_completion", non_dict_payload
+    )
+    try:
+        with pytest.raises(MediaProbeError, match="no program version"):
+            _ = prober_version()
+    finally:
+        prober_version.cache_clear()

@@ -10,8 +10,15 @@ standard library only; the frame reader (`[io]`, numpy) and the command line app
 from .probe.candidates import VIDEO_EXTENSIONS, is_candidate_video
 from .probe.errors import MediaProbeError
 from .probe.facts import MediaFacts
+
+# IDENTITY_SCHEME is exported; CONTENT_FORMAT_TAG and VIDEO_FORMAT_TAG are not
+# (see README, "Video identity"). A format tag is an input to the digest --
+# reading one is reimplementing the hash. The scheme is a fact recorded on
+# every probe for a consumer to compare against a stored value, which is the
+# whole reason it is exported.
 from .probe.identity import (
     DRIFT_SAFETY,
+    IDENTITY_SCHEME,
     TIMESTAMP_QUANTUM_SECONDS,
     DuplicateComparison,
     DuplicateVerdict,
@@ -45,6 +52,7 @@ __all__ = [
     "DEFAULT_THRESHOLDS",
     "DRIFT_SAFETY",
     "HARD_STREAM_REASONS",
+    "IDENTITY_SCHEME",
     "TIMESTAMP_QUANTUM_SECONDS",
     "VIDEO_EXTENSIONS",
     "AnalysisReason",

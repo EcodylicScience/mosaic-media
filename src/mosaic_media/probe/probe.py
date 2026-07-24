@@ -4,9 +4,9 @@ from pathlib import Path
 
 from .boxes import moov_at_start
 from .facts import MediaFacts
-from .ffprobe import read_header, scan_packets
+from .ffprobe import prober_version, read_header, scan_packets
 from .gop import measure_gop
-from .identity import mint_identity
+from .identity import IDENTITY_SCHEME, mint_identity
 from .policy import DEFAULT_THRESHOLDS, Thresholds
 from .timing import measure_timing
 
@@ -73,4 +73,6 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
         timing_measured=timing_measured,
         video_uuid=identity.video_uuid,
         content_digest=identity.content_digest,
+        identity_scheme=IDENTITY_SCHEME,
+        prober_version=prober_version(),
     )

@@ -123,6 +123,34 @@ against the system libav) is the fallback for a locked-down environment.
 not inject `facts`.
 
 
+## Versioning
+
+Releases follow semantic versioning, with the pre-1.0 convention that a minor
+bump is a breaking change and a patch bump is compatible. A consumer pins a
+range (`mosaic-media>=0.2.0,<0.3.0`); a bare floor would not exclude the next
+breaking release.
+
+The identity scheme is a second, independent number: `IDENTITY_SCHEME`, carried
+in both format tags and recorded on every probe as `MediaFacts.identity_scheme`.
+It moves only when the bytes hashed into `video_uuid` or `content_digest`
+change, and a move re-mints every value in every corpus.
+
+The two are coupled in one direction only: **a scheme bump always forces a
+version bump, and a version bump never implies a scheme bump.** Bumping the
+scheme is an edit here that invalidates every stored value, which is a breaking
+release by definition; most releases change nothing that is hashed, so the
+reverse does not follow.
+
+They cannot be one number. The scheme's trigger is an ffmpeg upgrade that
+changes libavformat's demuxer output -- the digest is defined against that
+output rather than raw file bytes -- and no API here changes when that happens,
+so a version number has nothing to signal it with. And a shared number would
+fold build metadata into identity: every unrelated release would re-mint every
+uuid in every corpus. Hashing only part of the version does not rescue it --
+past 1.0, an unrelated API break would re-mint everything while a genuine
+format break inside a major line would not.
+
+
 ## The reader
 
 The probe's packet scan returns every packet's time, size, and keyframe flag
@@ -376,6 +404,18 @@ large file (provisional, pending measurement on a real corpus). It is paid once,
 at the ingestion probe. `-show_data_hash` needs no newer ffprobe than the
 package already requires -- it shipped in FFmpeg 2.4, well below the 5.1 runtime
 floor.
+
+Every probe also records `identity_scheme` and `prober_version` on `MediaFacts`:
+the declared scheme version that minted `video_uuid` and `content_digest`, and
+the ffprobe build whose demuxer output the digest is defined against. Neither
+is hashed -- they are provenance, not content -- and they are what lets a
+consumer tell a re-mint under a later scheme apart from a file whose content
+actually changed. See "Versioning" for how `identity_scheme` relates to the
+package's own release number.
+
+The two format tags are internal constants and are deliberately not exported. A
+consumer reading a format tag is reimplementing the digest; `IDENTITY_SCHEME` is
+the opposite case, a recorded fact a consumer compares against a stored one.
 
 
 ## Extraction boundary

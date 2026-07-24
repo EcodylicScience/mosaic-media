@@ -345,6 +345,18 @@ facts, and thumbnail behavior is unchanged. Differences that do exist:
   migration, and the restore lists (the standard field-addition flow of
   section 3.3) -- or gate `.h264` out of uploads at registration until that
   column lands.
+- **`MediaFacts` gained two more required fields, `identity_scheme` and
+  `prober_version`.** They record which regime minted `video_uuid` and
+  `content_digest` -- the declared scheme version and the ffprobe build whose
+  demuxer output the digest is defined against -- so a later consumer can
+  tell a re-mint under a new scheme apart from a file whose content actually
+  changed. Neither is hashed, and neither is optional: every construction of
+  `MediaFacts` in mosaic_api's own tests (the analogue of `test_verdict.py`'s
+  `CLEAN` in this package) must state both. Add `identity_scheme` and
+  `prober_version` across `FACT_FIELDS`, the ORM models, an alembic migration,
+  and the restore lists the same way as `timing_measured` above, before
+  wiring the rewired `probe_media` into production -- a null default here
+  would silently claim a scheme and a build the row never had.
 - **The thumbnail helpers moved modules** (`media_probe.downscale` and
   `media_probe.thumbnail` became `mosaic_media.thumbnail.downscale` and
   `mosaic_media.thumbnail.extract`) but keep their names on the facade, so

@@ -3,11 +3,13 @@
 Two calls per file: one JSON header read, and one packet scan that
 demultiplexes the whole stream and reads each packet's payload to hash it. No
 frame is decoded -- the payload hash covers the demuxer-delivered bytes, not a
-decoded frame.
+decoded frame. One further call, `prober_version`, reads the running
+ffprobe's own version once per process rather than once per probed file.
 """
 
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -20,6 +22,7 @@ HEADER_TIMEOUT_SECONDS = 60
 # (0.97 s against 1.74 s to 1.85 s across two serialized runs that disagreed
 # by 25 percent). 900 seconds is two orders of magnitude above that.
 SCAN_TIMEOUT_SECONDS = 900
+VERSION_TIMEOUT_SECONDS = 30
 
 # The per-packet payload hash algorithm. Chosen on the identity collision
 # budget, not on cryptographic strength: the digests fold one hash per packet,
@@ -30,6 +33,7 @@ PAYLOAD_HASH_ALGORITHM = "CRC32"
 TimestampSource = Literal["pts", "dts", "none"]
 
 _ABSENT = ("", "N/A")
+_LIBAVFORMAT = "libavformat"
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +238,71 @@ def read_header(path: Path) -> Header:
         if frame_count_text is None or str(frame_count_text) in _ABSENT
         else int(str(frame_count_text)),
     )
+
+
+@lru_cache(maxsize=1)
+def prober_version() -> str:
+    """The ffprobe build that mints identity, as `"<program> <libavformat ident>"`.
+
+    Recorded on every probe as provenance, never hashed. The digest is defined
+    against libavformat's output rather than raw file bytes, so libavformat is
+    the component whose change is a format break; the program version rides
+    along because it is what an operator reads off their own machine. It is
+    taken to be a single token, which holds for every distribution and snapshot
+    build seen so far.
+
+    Cached for the process: this is a property of the binary, not of the file,
+    and a subprocess per probed file would be a real cost for a constant. The
+    consequence is that an ffprobe upgraded under a long-lived process is not
+    observed until it restarts, so the recorded value is a claim about the
+    binary as of process start.
+    """
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_program_version",
+        "-show_library_versions",
+        "-of",
+        "json",
+    ]
+    stdout = run_to_completion(
+        command,
+        timeout=VERSION_TIMEOUT_SECONDS,
+        action="reading its own version",
+        error_type=MediaProbeError,
+    )
+    try:
+        decoded = json.loads(stdout or "{}")
+    except json.JSONDecodeError as exc:
+        message = f"ffprobe returned invalid JSON for its own version: {exc}"
+        raise MediaProbeError(message) from exc
+    payload = decoded if isinstance(decoded, dict) else {}
+
+    program_version = payload.get("program_version")
+    raw_program = (
+        program_version.get("version") if isinstance(program_version, dict) else None
+    )
+    program = raw_program if isinstance(raw_program, str) else ""
+    if not program:
+        message = "ffprobe reported no program version"
+        raise MediaProbeError(message)
+
+    library_versions = payload.get("library_versions")
+    libraries = library_versions if isinstance(library_versions, list) else []
+    raw_ident = next(
+        (
+            library.get("ident")
+            for library in libraries
+            if isinstance(library, dict) and library.get("name") == _LIBAVFORMAT
+        ),
+        None,
+    )
+    libavformat_ident = raw_ident if isinstance(raw_ident, str) else ""
+    if not libavformat_ident:
+        message = f"ffprobe reported no {_LIBAVFORMAT} ident in its version output"
+        raise MediaProbeError(message)
+    return f"{program} {libavformat_ident}"
 
 
 def scan_command(path: Path, video_position: int) -> list[str]:

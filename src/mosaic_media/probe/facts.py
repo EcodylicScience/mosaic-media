@@ -35,6 +35,15 @@ class MediaFacts:
     directory of frames with no file to hash -- has no digest, and the caller
     building facts for one passes an empty string explicitly. The duplicate
     comparison reports such a pair as unminted rather than guessing.
+
+    `identity_scheme` and `prober_version` say which regime minted those two
+    values: the declared scheme version, and the ffprobe build whose demuxer
+    output the digest is defined against. Neither is hashed -- they are
+    provenance, so folding them in would re-mint every value on an ffmpeg patch
+    release. They are what lets a consumer tell a re-mint under a new scheme
+    apart from a file whose content actually changed. Required like the identity
+    values, and empty for the same reason: a source the probe never saw was
+    minted by nothing.
     """
 
     container: str
@@ -65,3 +74,5 @@ class MediaFacts:
     timing_measured: bool
     video_uuid: str
     content_digest: str
+    identity_scheme: str
+    prober_version: str

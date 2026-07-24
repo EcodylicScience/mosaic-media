@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from mosaic_media.probe import ffprobe, identity
 from mosaic_media.probe.errors import MediaProbeError
 from mosaic_media.probe.ffprobe import read_header, scan_packets
 from mosaic_media.probe.identity import mint_identity
@@ -15,6 +16,14 @@ def test_probe_media_fills_both_identity_fields(clips: dict[str, Path]) -> None:
     facts = probe_media(clips["cfr_mp4"])
     assert len(facts.content_digest) == 32
     assert len(facts.video_uuid) == 36
+
+
+def test_a_probed_file_records_the_scheme_and_the_prober(
+    clips: dict[str, Path],
+) -> None:
+    facts = probe_media(clips["cfr_mp4"])
+    assert facts.identity_scheme == identity.IDENTITY_SCHEME
+    assert facts.prober_version == ffprobe.prober_version()
 
 
 def test_probe_media_mints_identity_for_an_untimed_stream(

@@ -4,6 +4,9 @@ from pathlib import Path
 
 from mosaic_media.probe.ffprobe import Header, Packet, read_header, scan_packets
 from mosaic_media.probe.identity import (
+    CONTENT_FORMAT_TAG,
+    IDENTITY_SCHEME,
+    VIDEO_FORMAT_TAG,
     Identity,
     content_digest_input,
     mint_identity,
@@ -47,6 +50,13 @@ GOLDEN_SHA256 = "e49aee70c07f43349b8852ceb5b1c401c1da1b078982df43c65f1a98cce5d2a
 GOLDEN_VIDEO_CONTENT_BYTES = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
 GOLDEN_VIDEO_LENGTH = 69
 GOLDEN_VIDEO_SHA256 = "c3b076782663a6d010a3872a3a2aebdcae6391e28bbd9942c3849c567438afb7"
+
+
+def test_both_format_tags_are_built_from_one_scheme_version() -> None:
+    assert CONTENT_FORMAT_TAG.endswith(IDENTITY_SCHEME.encode())
+    assert VIDEO_FORMAT_TAG.endswith(IDENTITY_SCHEME.encode())
+    assert CONTENT_FORMAT_TAG == b"mosaic-media/content/1"
+    assert VIDEO_FORMAT_TAG == b"mosaic-media/video/1"
 
 
 def identity_of(path: Path) -> Identity:
