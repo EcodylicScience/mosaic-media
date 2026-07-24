@@ -7,11 +7,11 @@ decoded frame.
 """
 
 import json
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from ..ffmpeg import run_to_completion
 from .errors import MediaProbeError
 
 HEADER_TIMEOUT_SECONDS = 60
@@ -74,24 +74,6 @@ class Packet:
     keyframe: bool
     pos: int
     data_hash: str = ""
-
-
-def _run(command: list[str], timeout: int, action: str) -> str:
-    try:
-        result = subprocess.run(
-            command, capture_output=True, text=True, timeout=timeout
-        )
-    except FileNotFoundError as exc:
-        message = f"ffprobe binary not found on PATH: {exc}"
-        raise MediaProbeError(message) from exc
-    except subprocess.TimeoutExpired as exc:
-        message = f"ffprobe timed out {action}"
-        raise MediaProbeError(message) from exc
-    if result.returncode != 0:
-        detail = result.stderr.strip() or "unknown error"
-        message = f"ffprobe failed {action}: {detail}"
-        raise MediaProbeError(message) from None
-    return result.stdout
 
 
 def _fraction(text: str) -> float:
@@ -190,7 +172,12 @@ def read_header(path: Path) -> Header:
         "json",
         str(path.absolute()),
     ]
-    raw = _run(command, HEADER_TIMEOUT_SECONDS, f"reading the header of {path}")
+    raw = run_to_completion(
+        command,
+        timeout=HEADER_TIMEOUT_SECONDS,
+        action=f"reading the header of {path}",
+        error_type=MediaProbeError,
+    )
     try:
         payload = json.loads(raw or "{}")
     except json.JSONDecodeError as exc:
@@ -296,7 +283,12 @@ def scan_packets(
     `array` buffers instead of objects -- and neither costs a dependency.
     """
     command = scan_command(path, video_position)
-    raw = _run(command, SCAN_TIMEOUT_SECONDS, f"scanning the packets of {path}")
+    raw = run_to_completion(
+        command,
+        timeout=SCAN_TIMEOUT_SECONDS,
+        action=f"scanning the packets of {path}",
+        error_type=MediaProbeError,
+    )
 
     pts_packets: list[Packet] = []
     dts_packets: list[Packet] = []

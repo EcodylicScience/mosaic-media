@@ -150,9 +150,11 @@ def test_scan_packets_names_a_missing_payload_hash_column(
     # An ffprobe that accepts the flag but does not report the data_hash entry
     # emits five columns. Every row is then unusable, and the failure must name
     # the cause rather than claiming the file has no packets.
-    def five_column_rows(_command: list[str], _timeout: int, _action: str) -> str:
+    def five_column_rows(_command: list[str], **_keywords: object) -> str:
         return "0.000000,0.000000,3837,48,K__\n0.040000,0.040000,120,3885,___\n"
 
-    monkeypatch.setattr("mosaic_media.probe.ffprobe._run", five_column_rows)
+    monkeypatch.setattr(
+        "mosaic_media.probe.ffprobe.run_to_completion", five_column_rows
+    )
     with pytest.raises(MediaProbeError, match="does not report data_hash"):
         _ = scan_packets(tmp_path / "any.mp4", video_position=0)

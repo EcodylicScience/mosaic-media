@@ -7,9 +7,9 @@ the exact destination the caller names; atomicity (temp + rename) is the
 caller's concern because only the caller knows the cache layout.
 """
 
-import subprocess
 from pathlib import Path
 
+from ..ffmpeg import require_output, run_to_completion
 from ..probe.errors import MediaProbeError
 
 DOWNSCALE_TIMEOUT_SECONDS = 60
@@ -45,20 +45,10 @@ def downscale_to_jpeg(
         "-y",
         str(destination.absolute()),
     ]
-    try:
-        result = subprocess.run(
-            command, capture_output=True, text=True, timeout=DOWNSCALE_TIMEOUT_SECONDS
-        )
-    except FileNotFoundError as exc:
-        message = f"ffmpeg binary not found on PATH: {exc}"
-        raise MediaProbeError(message) from exc
-    except subprocess.TimeoutExpired as exc:
-        message = f"ffmpeg timed out downscaling {source}"
-        raise MediaProbeError(message) from exc
-    if result.returncode != 0:
-        detail = result.stderr.strip() or "unknown error"
-        message = f"ffmpeg failed downscaling {source}: {detail}"
-        raise MediaProbeError(message)
-    if not destination.exists() or destination.stat().st_size == 0:
-        message = f"ffmpeg produced no output at {destination}"
-        raise MediaProbeError(message)
+    _ = run_to_completion(
+        command,
+        timeout=DOWNSCALE_TIMEOUT_SECONDS,
+        action=f"downscaling {source}",
+        error_type=MediaProbeError,
+    )
+    require_output(destination, binary=command[0], error_type=MediaProbeError)

@@ -23,6 +23,7 @@ STDLIB_ONLY_TARGETS: tuple[Path, ...] = (
     CORE_ROOT / "__init__.py",
     CORE_ROOT / "probe",
     CORE_ROOT / "thumbnail",
+    CORE_ROOT / "ffmpeg.py",
     CORE_ROOT / "hwaccel.py",
     CORE_ROOT / "transcode",
 )
@@ -35,16 +36,19 @@ NUMPY_LAYER_TARGETS: tuple[Path, ...] = (CORE_ROOT / "io",)
 # The one-way layering across the checked layers, keyed by the first path
 # component under src/mosaic_media (module stem for top-level files). Each
 # entry lists the layers a file there may reach with a relative import. io and
-# transcode may reach the core (probe, hwaccel) and themselves; the
+# transcode may reach the core (probe, hwaccel, ffmpeg) and themselves; the
 # still-heavier cli layer is absent on purpose: reaching it is a violation,
-# and a new layer must be added explicitly.
+# and a new layer must be added explicitly. ffmpeg is the bottom leaf -- the
+# shared subprocess runner and its failure wording -- so it reaches nothing and
+# every layer that shells out to a binary may reach it.
 CORE_RELATIVE_IMPORT_ALLOWANCES: dict[str, frozenset[str]] = {
     "__init__": frozenset({"probe", "thumbnail"}),
+    "ffmpeg": frozenset(),
     "hwaccel": frozenset(),
     "io": frozenset({"io", "probe", "hwaccel"}),
-    "probe": frozenset({"probe"}),
-    "thumbnail": frozenset({"thumbnail", "probe"}),
-    "transcode": frozenset({"transcode", "probe", "hwaccel"}),
+    "probe": frozenset({"probe", "ffmpeg"}),
+    "thumbnail": frozenset({"thumbnail", "probe", "ffmpeg"}),
+    "transcode": frozenset({"transcode", "probe", "hwaccel", "ffmpeg"}),
 }
 
 

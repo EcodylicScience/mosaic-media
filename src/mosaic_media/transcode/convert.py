@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+from ..ffmpeg import failed_message, not_found_message, timed_out_message
 from ..probe.errors import MediaProbeError
 from ..probe.facts import MediaFacts
 from ..probe.policy import PlaybackProfile, Thresholds
@@ -208,6 +209,8 @@ def _run_ffmpeg(
         f"{_PROGRESS_INTERVAL_SECONDS:g}",
         *argv[1:],
     )
+    binary = argv[0]
+    action = f"transcoding {source}"
     with tempfile.TemporaryFile(mode="w+") as stderr_file:
         try:
             process = subprocess.Popen(
@@ -217,7 +220,7 @@ def _run_ffmpeg(
                 text=True,
             )
         except FileNotFoundError as exc:
-            message = f"ffmpeg binary not found on PATH: {exc}"
+            message = not_found_message(binary, exc)
             raise TranscodeError(message) from exc
         assert process.stdout is not None
         lines: queue.Queue[str | None] = queue.Queue()
@@ -236,9 +239,7 @@ def _run_ffmpeg(
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     _terminate(process)
-                    message = (
-                        f"ffmpeg timed out after {timeout:g}s transcoding {source}"
-                    )
+                    message = timed_out_message(binary, action, timeout=timeout)
                     raise TranscodeError(message)
                 try:
                     line = lines.get(timeout=min(remaining, _PROGRESS_POLL_SECONDS))
@@ -265,12 +266,11 @@ def _run_ffmpeg(
             returncode = process.wait(timeout=max(remaining, 0.0))
         except subprocess.TimeoutExpired:
             _terminate(process)
-            message = f"ffmpeg timed out after {timeout:g}s transcoding {source}"
+            message = timed_out_message(binary, action, timeout=timeout)
             raise TranscodeError(message)
         if returncode != 0:
             _ = stderr_file.seek(0)
-            detail = stderr_file.read().strip() or "unknown error"
-            message = f"ffmpeg failed transcoding {source}: {detail}"
+            message = failed_message(binary, action, stderr_file.read())
             raise TranscodeError(message)
 
 

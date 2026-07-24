@@ -19,6 +19,22 @@ _nvdec_ok: bool | None = None
 _encoder_ok: dict[str, bool] = {}
 
 
+def _probe(command: list[str]) -> "subprocess.CompletedProcess[str] | None":
+    """Run a capability probe, or None when ffmpeg could not be run at all.
+
+    A probe answers a yes-or-no question, so every way of failing to run one --
+    a missing binary, a timeout, a signal -- is simply a no. Nothing here
+    raises, which is why these probes stay out of the shared runner in
+    `mosaic_media.ffmpeg`: they have no error to inject and no failure to word.
+    """
+    try:
+        return subprocess.run(
+            command, capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SECONDS
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def ffmpeg_available() -> bool:
     """True when an ffmpeg binary is on PATH. Cached."""
     global _ffmpeg_ok
@@ -42,31 +58,25 @@ def nvdec_available() -> bool:
         if not ffmpeg_available():
             _nvdec_ok = False
         else:
-            try:
-                result = subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-v",
-                        "error",
-                        "-init_hw_device",
-                        "cuda",
-                        "-f",
-                        "lavfi",
-                        "-i",
-                        "nullsrc=s=64x64:d=0.05",
-                        "-frames:v",
-                        "1",
-                        "-f",
-                        "null",
-                        "-",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=_PROBE_TIMEOUT_SECONDS,
-                )
-                _nvdec_ok = result.returncode == 0
-            except (OSError, subprocess.SubprocessError):
-                _nvdec_ok = False
+            result = _probe(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-init_hw_device",
+                    "cuda",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "nullsrc=s=64x64:d=0.05",
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "null",
+                    "-",
+                ]
+            )
+            _nvdec_ok = result is not None and result.returncode == 0
     return _nvdec_ok
 
 
@@ -97,15 +107,7 @@ def encoder_available(name: str) -> bool:
     if not ffmpeg_available():
         _encoder_ok[name] = False
         return False
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-encoders"],
-            capture_output=True,
-            text=True,
-            timeout=_PROBE_TIMEOUT_SECONDS,
-        )
-        available = _encoder_listed(name, result.stdout)
-    except (OSError, subprocess.SubprocessError):
-        available = False
+    result = _probe(["ffmpeg", "-encoders"])
+    available = result is not None and _encoder_listed(name, result.stdout)
     _encoder_ok[name] = available
     return available

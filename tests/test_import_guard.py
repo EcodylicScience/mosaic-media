@@ -40,6 +40,7 @@ sys.meta_path.insert(0, Poison())
 
 _CORE_IMPORTS = """
 import mosaic_media
+import mosaic_media.ffmpeg
 import mosaic_media.hwaccel
 import mosaic_media.probe
 import mosaic_media.probe.boxes
