@@ -65,7 +65,7 @@ git switch -c reader-conversion-filter-graph
 | File | Responsibility | Change |
 | --- | --- | --- |
 | `src/mosaic_media/io/reader.py` | Frame decoding and conversion | Replace the rotation-only graph and the per-frame conversion calls with one conversion graph |
-| `tests/io/test_reader_frame_contract.py` | The writable, contiguous, non-aliasing output contract | Extend from the plain path to every conversion path |
+| `tests/io/test_reader_frame_contract.py` | The writable, contiguous, non-aliasing output contract | Extend from the plain path to every conversion path, then correct its docstring once the buffer it describes changes |
 | `tests/io/test_reader_resize_content.py` | Resize output against ffmpeg goldens | Tighten tolerances, add rotated cases, correct the stated rationale |
 | `tests/helpers/corpus.py` | Golden generation helpers | Correct `scaled_frames`'s stated reason for returning pixels |
 | `tests/bench/test_sequential_decode.py` | Sequential and strided gates | Correct the tier rationale; thresholds unchanged |
@@ -253,6 +253,8 @@ git commit -m "Check the frame buffer contract on every conversion path"
 - Modify: `src/mosaic_media/io/reader.py`
 - Modify: `tests/io/test_reader_resize_content.py`
 - Modify: `tests/helpers/corpus.py`
+- Modify: `tests/io/test_reader_frame_contract.py` (docstring only; the tests
+  themselves stay untouched)
 
 **Interfaces:**
 - Consumes: `_Geometry` (fields `fps`, `source_frame_count`, `out_width`,
@@ -521,7 +523,39 @@ too. Replace that clause so the docstring reads:
     rather than an equality, which needs the pixels."""
 ```
 
-- [ ] **Step 9: Run the resize tests to verify they now pass**
+- [ ] **Step 9: Correct the frame contract docstring**
+
+`tests/io/test_reader_frame_contract.py` describes the buffer the returned array
+wraps. Two of its statements stop being true once conversion moves into the
+graph: the array is no longer always a view (`ascontiguousarray` copies wherever
+the graph padded the line size, and an owned copy reports `OWNDATA` as True),
+and the line-size padding it attributes to rotation and scaling is a property of
+the graph rather than of the code it described when written.
+
+Replace the module docstring with:
+
+```python
+"""Decoded frames are writable, C-contiguous, non-aliasing buffers.
+
+Consumers draw overlays directly onto returned frames. Where the converted
+frame's line size already matches its width the array wraps that buffer
+directly; where the graph padded it, the array is an owned contiguous copy. The
+contract is the same either way, and it is what these tests pin: writability,
+C-contiguity, and that consecutive reads never alias one another -- mutating one
+returned frame must not be able to corrupt another.
+
+Every conversion path is covered, not just the plain one. The graph pads the
+line size for scaled output and for the quarter-turn rotations, so contiguity is
+the guarantee most at risk on exactly the paths a plain-path-only test leaves
+unchecked.
+"""
+```
+
+Change nothing else in the file: the tests themselves must stay exactly as they
+are. They passed before the reader change and must pass after it unaltered,
+which is the entire reason they were written first.
+
+- [ ] **Step 10: Run the resize tests to verify they now pass**
 
 ```bash
 uv run pytest tests/io/test_reader_resize_content.py -v
@@ -529,7 +563,7 @@ uv run pytest tests/io/test_reader_resize_content.py -v
 
 Expected: all eight cases PASS.
 
-- [ ] **Step 10: Run the reader and frame contract suites**
+- [ ] **Step 11: Run the reader and frame contract suites**
 
 ```bash
 uv run pytest tests/io/ -v
@@ -540,7 +574,7 @@ Expected: all PASS. The rotation goldens, the grayscale framemd5 golden in
 and variable-rate suites must all stay green unchanged. Do not edit any of them
 to accommodate the change: if one fails, the change is wrong, not the test.
 
-- [ ] **Step 11: Check formatting, linting, and types**
+- [ ] **Step 12: Check formatting, linting, and types**
 
 ```bash
 uv run ruff format src/ tests/
@@ -552,7 +586,7 @@ Expected: all clean. Fix mechanical typing issues in code you wrote. If a type
 error reveals a design problem rather than a missing annotation, stop and report
 it instead of working around it.
 
-- [ ] **Step 12: Run the full suite**
+- [ ] **Step 13: Run the full suite**
 
 Run the full suite serialized through whatever serialization mechanism the
 machine provides, in the foreground:
@@ -563,10 +597,11 @@ uv run pytest tests/
 
 Expected: all PASS.
 
-- [ ] **Step 13: Commit**
+- [ ] **Step 14: Commit**
 
 ```bash
 git add src/mosaic_media/io/reader.py tests/io/test_reader_resize_content.py \
+        tests/io/test_reader_frame_contract.py \
         tests/helpers/corpus.py
 git commit -m "Convert decoded frames through one filter graph per reader"
 ```
