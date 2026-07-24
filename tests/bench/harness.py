@@ -18,9 +18,26 @@ import statistics
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Generic, Literal, TypeVar
 
 DEFAULT_ROUNDS = 5
+
+# Whether a measurement is asserted on. A gate fails the run when it is missed;
+# a report only records where the ratio landed.
+ReportMode = Literal["gate", "report"]
+
+# (met, missed) verdict words per mode.
+_VERDICTS: dict[ReportMode, tuple[str, str]] = {
+    "gate": ("PASS", "FAIL"),
+    "report": ("OK", "WARN"),
+}
+
+# What the compared-against number is called per mode. A report's number is a
+# reference marker, not a threshold: nothing asserts on it.
+_BOUND_LABELS: dict[ReportMode, str] = {
+    "gate": "threshold",
+    "report": "reference",
+}
 
 SetupT = TypeVar("SetupT")
 
@@ -138,8 +155,19 @@ def _format_milliseconds(times: list[float]) -> str:
     return ", ".join(f"{value * 1000:.1f}" for value in times)
 
 
-def format_report(result: BenchResult, *, threshold: float = 1.0) -> str:
-    verdict = "PASS" if result.ratio >= threshold else "FAIL"
+def format_report(
+    result: BenchResult, *, threshold: float = 1.0, mode: ReportMode = "gate"
+) -> str:
+    """Render one measurement. `mode` selects the vocabulary, not the numbers.
+
+    A gated workload asserts on its threshold, so PASS and FAIL describe what
+    the run did. A print-only report asserts on nothing, and calling its
+    outcome FAIL reads as a failed run in a log where nothing failed -- so it
+    reports OK or WARN, against a reference rather than a threshold, because
+    no run is failed by missing it.
+    """
+    met, missed = _VERDICTS[mode]
+    verdict = met if result.ratio >= threshold else missed
     header = f"[bench] {result.name}"
     cv2_line = (
         f"  cv2    median {result.cv2_median * 1000:9.1f} ms"
@@ -151,7 +179,7 @@ def format_report(result: BenchResult, *, threshold: float = 1.0) -> str:
     )
     ratio_line = (
         f"  ratio cv2/reader = {result.ratio:.3f}"
-        f"  threshold {threshold:.2f}  -> {verdict}"
+        f"  {_BOUND_LABELS[mode]} {threshold:.2f}  -> {verdict}"
     )
     return "\n".join([header, cv2_line, reader_line, ratio_line])
 
@@ -167,21 +195,3 @@ def assert_gate(result: BenchResult, *, threshold: float = 1.0) -> None:
         "STOP: report these numbers to the reviewer; do not tune the threshold."
     )
     assert result.ratio >= threshold, message
-
-
-def assert_bounded(result: BenchResult, *, max_slowdown: float = 2.0) -> None:
-    """Print the report and assert the reader stays within max_slowdown x OpenCV.
-
-    Non-gating parity. See the cold-seek test docstring for why isolated random
-    single-frame seeks are bounded rather than gated at parity.
-    """
-    minimum_ratio = 1.0 / max_slowdown
-    print(format_report(result, threshold=minimum_ratio))
-    message = (
-        f"{result.name}: exceeded the documented {max_slowdown:.0f}x cold-seek "
-        f"bound -- cv2 median {result.cv2_median * 1000:.1f} ms, "
-        f"reader median {result.reader_median * 1000:.1f} ms, "
-        f"ratio {result.ratio:.3f} < {minimum_ratio:.3f}. "
-        "STOP: report these numbers to the reviewer."
-    )
-    assert result.ratio >= minimum_ratio, message

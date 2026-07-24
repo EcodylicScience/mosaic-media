@@ -70,6 +70,11 @@ class VideoReader:
     The source frame count is resolved in this order: `facts.frame_count` when
     facts are injected, then the stream's declared frame count when that is
     positive, then the length of the packet index.
+
+    Every array returned by this reader -- from `read`, `read_batch`,
+    `read_frames`, or iteration -- is writable, C-contiguous, and never aliases
+    another returned array, so a caller may draw onto one without affecting
+    another.
     """
 
     def __init__(
@@ -514,7 +519,7 @@ class VideoReader:
             self._container = None
             # Released alongside the container: the graph holds a frame pool,
             # which a closed but still referenced reader would otherwise keep
-            # alive. Every reader now builds one, not only the rotated ones.
+            # alive.
             self._conversion_graph = None
             if container is not None:
                 container.close()

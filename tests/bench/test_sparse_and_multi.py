@@ -40,15 +40,20 @@ SPARSE_COUNT = 20
 SPARSE_SEED = 20260716
 JUNCTION_WINDOW = 100
 
-# Thin-margin rule: any gated workload whose stabilization margin over its
-# bound is under 10 percent runs at rounds=9, so the stabilization median
-# recorded here makes a failure diagnosable as regression-versus-noise (see
-# the spec's "Gate policy and thresholds, revised for in-process decode").
+# Thin-margin rule: any gated workload whose margin over its bound is under 10
+# percent runs at rounds=9, so the recorded median makes a failure diagnosable
+# as regression-versus-noise (see the spec's "Gate policy and thresholds,
+# revised for in-process decode").
 _SORTED_SPARSE_EXTRACTION_ROUNDS: dict[str, int] = {
-    "gop12": DEFAULT_ROUNDS,  # stabilization median 1.660, ample margin
-    "gop250": 9,  # stabilization median 1.063, thin margin
+    "gop12": 9,  # calibration median 1.218, thin margin (9.9 percent)
+    "gop250": DEFAULT_ROUNDS,  # calibration median 3.387, ample margin
 }
-# Thin-margin rule: stabilization median 1.032, margin under 10 percent.
+# The injected gate measures a comfortable margin (calibration median 1.656,
+# 59 percent over the 1.0 bound), so the thin-margin rule does not apply here.
+# Rounds stay at 9 because the print-only from-scratch report above shares
+# this constant and flaps across its 1.5x reference marker, where the extra
+# rounds still earn their keep (see the spec's "Gate policy and thresholds,
+# revised for in-process decode").
 _MULTI_VIDEO_JUNCTION_ROUNDS = 9
 
 
@@ -166,11 +171,11 @@ def test_report_multi_video_junction(bench_corpus: dict[str, Path]) -> None:
     non-consumer path: consumers hold MediaFacts from the one ingestion probe
     and inject them, so they never pay a per-open probe, and
     test_gate_multi_video_junction_with_injected_facts gates that real path at
-    the carve tier. And the probe this path pays now reads every packet's
-    payload to mint the content digest, which raised the open cost further --
-    the ratio flaps across a 1.5x bound on real hardware, throttling as the
-    bench heats the CPU, so a bound here fails on machine state rather than on a
-    code regression the injected gate would not already catch.
+    parity. And the probe this path pays now reads every packet's payload to
+    mint the content digest, which raised the open cost further -- the ratio
+    flaps across a 1.5x bound on real hardware, throttling as the bench heats
+    the CPU, so a bound here fails on machine state rather than on a code
+    regression the injected gate would not already catch.
 
     This is the measured, hard reason a consumer that already holds probed facts
     must inject them rather than reconstruct a reader from paths: the per-open
@@ -189,12 +194,13 @@ def test_report_multi_video_junction(bench_corpus: dict[str, Path]) -> None:
         ),
     )
     # Print-only: the injected gate owns the regression guard for this workload.
-    # The threshold argument only labels where the ratio landed relative to the
-    # historical 1.5x bound; nothing asserts on it.
+    # The number only labels where the ratio landed relative to the historical
+    # 1.5x bound; nothing asserts on it, which is what report mode says.
     print(
         format_report(
             run_workload(workload, rounds=_MULTI_VIDEO_JUNCTION_ROUNDS),
             threshold=1.0 / 1.5,
+            mode="report",
         )
     )
 
@@ -205,10 +211,9 @@ def test_gate_multi_video_junction_with_injected_facts(
     """The consumer-shaped open, gated: facts from ingestion and indices held
     by the caller are injected, so the timed region pays no ffprobe subprocess
     and no packet rescan -- construction is the metadata-authority path
-    consumers actually run. The 0.9 threshold is the owned-BGR-copy carve, the
-    same tier as sequential decode, which this workload is once the open cost
-    is out of the way. The from-scratch construction stays a bounded report
-    above."""
+    consumers actually run. This is a parity gate (>= 1.0) on the reference
+    configuration (see conftest.py); the calibration median is 1.656. The
+    from-scratch construction stays a bounded report above."""
     path = bench_corpus["gop12"]
     paths = [path, path]
 
@@ -230,5 +235,5 @@ def test_gate_multi_video_junction_with_injected_facts(
     )
     assert_gate(
         run_workload(workload, rounds=_MULTI_VIDEO_JUNCTION_ROUNDS),
-        threshold=0.9,
+        threshold=1.0,
     )

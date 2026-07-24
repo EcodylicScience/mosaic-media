@@ -19,7 +19,9 @@ The 320x240 fixture is deliberate and sufficient: at that size the scaled and
 quarter-turn outputs are padded (rows of 480 and 720 bytes in line sizes of 576
 and 768), so the copy path is exercised without paying for 1080p clips. The
 plain and 180-degree cases are unpadded there, which is equally worth covering --
-they are where a copy must NOT be taken.
+they are where the no-copy path runs. This module does not assert the absence
+of a copy: whether a given output size is padded is a property of the libav
+build, not of this package, so nothing here pins it either way.
 """
 
 from collections.abc import Callable

@@ -34,10 +34,9 @@ SEEK_START_READ_COUNT = 200
 MONOTONIC_SEEKS = 50
 MONOTONIC_STEP = 3
 
-# Tier CARVE (>= 0.9): the owned-BGR structural copy (see the spec's "Gate
-# policy and thresholds, revised for in-process decode"). Stabilization
-# medians: gop12 1.011, gop250 0.986.
-_SEEK_THEN_SEQUENTIAL_THRESHOLD = 0.9
+# Parity gate (>= 1.0) on the reference configuration (see conftest.py).
+# Calibration medians: gop12 1.798, gop250 1.542.
+_SEEK_THEN_SEQUENTIAL_THRESHOLD = 1.0
 
 
 def _cv2_seek_then_sequential(path: Path, start: int, count: int) -> int:

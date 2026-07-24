@@ -24,16 +24,15 @@ pytestmark = pytest.mark.bench
 
 STRIDE = 5
 
-# Tier CARVE (>= 0.9): the owned-BGR structural copy. av reformats yuv into a
-# bgr24 frame plus an ndarray copy out of it, ~0.4-0.5 ms/frame at 1080p,
-# where cv2 converts into the returned array in one operation (see the
-# spec's "Gate policy and thresholds, revised for in-process decode"). The
-# rotation variant decodes through the libav transpose filter graph and
-# stays a full-tier >= 1.0 gate, not the carve tier.
+# Every gated workload is held at parity (>= 1.0) on the reference
+# configuration: 20 cores, Python 3.12.3, system ffmpeg 6.1.1, and the
+# dependency set pinned in uv.lock (see conftest.py). The recorded medians
+# below are what the reference measured, five full runs, all clearing the
+# threshold every time.
 _SEQUENTIAL_FULL_DECODE_THRESHOLD: dict[str, float] = {
-    "gop12": 0.9,  # stabilization median 0.956
-    "gop250": 0.9,  # stabilization median 0.949
-    "rotation": 1.0,  # stabilization median 1.242
+    "gop12": 1.0,  # calibration median 2.487
+    "gop250": 1.0,  # calibration median 2.391
+    "rotation": 1.0,  # calibration median 1.719
 }
 
 

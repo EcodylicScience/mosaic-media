@@ -25,12 +25,11 @@ from tests.bench.support import CV2_IMPORTORSKIP_REASON, make_reader
 cv2 = pytest.importorskip("cv2", reason=CV2_IMPORTORSKIP_REASON)
 pytestmark = pytest.mark.bench
 
-# Thin-margin rule: metadata-open is measured here through a from-open
-# approximation (stabilization medians approximately 1.067 / 1.060) close to
-# the gate boundary, so every corpus variant runs at rounds=9 (see the
-# spec's "Gate policy and thresholds, revised for in-process decode"). The
-# real reader answers metadata from injected MediaFacts and is far cheaper,
-# so >= 1.0 holds with room.
+# metadata-open is milliseconds long (calibration medians 66.310 / 66.060 /
+# 67.136, nowhere near the gate boundary), so rounds=9 is not a thin-margin
+# accommodation: extra rounds are nearly free at this scale and steady the
+# very small reader median (about 0.1 ms) the ratio divides by (see the
+# spec's "Gate policy and thresholds, revised for in-process decode").
 _METADATA_OPEN_ROUNDS = 9
 
 

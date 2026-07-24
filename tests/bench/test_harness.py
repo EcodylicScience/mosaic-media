@@ -13,7 +13,13 @@ from collections import deque
 
 import pytest
 
-from tests.bench.harness import Workload, run_workload
+from tests.bench.harness import (
+    BenchResult,
+    Workload,
+    assert_gate,
+    format_report,
+    run_workload,
+)
 
 
 class _FakeClock:
@@ -102,3 +108,33 @@ def test_none_return_rejected() -> None:
             Workload("fake", lambda: None, lambda _c: None, lambda _c: "x"),
             rounds=5,
         )
+
+
+def _result(ratio: float) -> BenchResult:
+    """A result whose cv2/reader ratio is exactly `ratio`."""
+    return BenchResult(name="fake", cv2_times=[ratio], reader_times=[1.0])
+
+
+def test_gate_mode_reports_pass_and_fail_against_a_threshold() -> None:
+    met = format_report(_result(1.5), threshold=1.0)
+    missed = format_report(_result(0.5), threshold=1.0)
+    assert "threshold 1.00  -> PASS" in met
+    assert "threshold 1.00  -> FAIL" in missed
+
+
+def test_assert_gate_raises_below_threshold_and_passes_above() -> None:
+    assert_gate(_result(1.5), threshold=1.0)  # ratio above threshold: no raise
+    with pytest.raises(AssertionError, match="reader slower than OpenCV"):
+        assert_gate(_result(0.5), threshold=1.0)
+
+
+def test_report_mode_never_says_fail() -> None:
+    # A print-only report asserts on nothing, so a missed number must not read
+    # as a failed run in the log -- that is a false alarm for whoever reads it.
+    met = format_report(_result(1.5), threshold=1.0, mode="report")
+    missed = format_report(_result(0.5), threshold=1.0, mode="report")
+    assert "reference 1.00  -> OK" in met
+    assert "reference 1.00  -> WARN" in missed
+    for rendered in (met, missed):
+        assert "FAIL" not in rendered
+        assert "threshold" not in rendered

@@ -14,10 +14,11 @@ about 24 gray levels.
 Scaling inside the reader's filter graph is what makes the color path exact.
 Driving libswscale through VideoFrame.reformat instead diverges from ffmpeg on
 the chroma planes -- luma stays bit-identical, chroma reaches 20 to 27 -- and
-that error is amplified once it crosses into BGR, reaching 57 upright and 76
-rotated across the 48-frame corpus_gop12 clip. The color conversion on its own
-is exact in both libraries, so the cause is chroma plane scaling, not a library
-version difference and not the conversion.
+that error is amplified once it crosses into BGR, reaching 57 upright on the
+48-frame corpus_gop12 clip and 76 rotated on rotated clips of the same shape,
+generated below by this module's own rotated test. The color conversion on its
+own is exact in both libraries, so the cause is chroma plane scaling, not a
+library version difference and not the conversion.
 """
 
 from pathlib import Path

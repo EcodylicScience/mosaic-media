@@ -19,6 +19,14 @@ Each workload probes its file once with probe_media in the untimed setup and
 injects the resulting MediaFacts into the reader through support.make_reader,
 so no benchmark re-measures inside the timed region -- consumers hold MediaFacts
 and do not re-probe per open ('measurement is not re-derived').
+
+REFERENCE CONFIGURATION. Thresholds are calibrated on a reference
+configuration: 20 cores, Python 3.12.3, system ffmpeg 6.1.1, and the
+dependency set pinned in uv.lock. Running the gate on a smaller or busier
+machine is expected to fail thresholds; such a failure reports on the
+machine, not on the code. The recorded medians beside each threshold are what
+the reference measured, updated only at a deliberate recalibration -- never
+edited to make a run pass.
 """
 
 from __future__ import annotations

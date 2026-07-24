@@ -131,6 +131,15 @@ libavfilter's pool cannot recycle a buffer still held by a caller, and mutating
 one returned frame leaves the next intact. Returned arrays remain writable, so
 consumers can still draw overlays onto them.
 
+### Degenerate resize is rejected at construction
+
+The scale filter reads a non-positive dimension as "keep the source size", so
+an unvalidated degenerate resize would read successfully while the reader's
+reported geometry contradicted the frames it emitted. Construction rejects it
+instead, raising `MediaProbeError` for a `resize` with a non-positive width or
+height -- a new constructor error for consumers that pass `resize` from
+configuration.
+
 ## Seek behavior
 
 The graph is not rebuilt on seek. A backward container seek pushes frames whose
@@ -247,13 +256,40 @@ replaced with the chroma-scaling explanation, not merely reworded.
 
 ## Performance gate
 
-The implementation does not change any gate threshold. The gate compares the
-reader against OpenCV, and a reader that got faster raises every ratio,
-including past the carve tier that exists for the conversion cost this change
-removes. Re-deriving those thresholds is a separate decision made on reported
-numbers, not an implementation step -- the gate's own failure message forbids
-tuning thresholds, and that applies to a passing gate as much as a failing one.
-The branch reports the measured post-change ratios for every gated workload.
+The gate thresholds are re-derived here, and every gated workload is held at
+parity.
+
+The sub-parity carve tier existed because the laptop the thresholds were
+calibrated on could not sustain 1.0: eight cores, thermal throttling, and cores
+shared with work no lock governs. That is a property of the machine, not of the
+reader, so the carve was measuring the wrong thing. Recalibrating on a machine
+that can hold a measurement removes it: on the reference configuration -- twenty
+cores, Python 3.12.3, system ffmpeg 6.1.1, and the dependency set pinned in
+`uv.lock` -- every workload's *worst* run over five full passes clears 1.0.
+
+Recalibrating and changing the reader in one branch costs bisectability: a later
+gate failure cannot be attributed to one or the other without re-measuring both.
+That was weighed and accepted.
+
+One workload keeps a sub-parity floor. `cold-random-seek[gop250]` measures a
+median of 1.061 and a worst run of 1.041, and bootstrapping the median-of-five
+statistic the gate actually computes, over all twenty-five observed rounds per
+side, puts its failure probability at 1.0 at 2.53 percent -- roughly one run in
+forty -- against 0.00 percent at 0.9. It is floored at 0.9 because of measured
+variance in the OpenCV baseline, not because the reader is slow.
+
+The thin margins are in the baseline, not in this package. On
+`sorted-sparse-extraction[gop12]`, the thinnest gate in the suite, the OpenCV
+side varies by 15.8 percent run to run while the reader varies by 7.1 percent:
+OpenCV re-seeks with `CAP_PROP_POS_FRAMES` per target, where the reader resolves
+each preceding keyframe deterministically from its packet index. The gate's
+median-of-five aggregation absorbs that, which is why a 9.9 percent worst-run
+margin still bootstraps to a 0.00 percent failure rate.
+
+Thresholds are calibrated for the reference configuration and are expected to
+fail on a smaller or busier machine. Such a failure reports on the machine. The
+recorded medians beside each threshold are what the reference measured; they are
+updated only at a deliberate recalibration and never edited to make a run pass.
 
 Two gate-adjacent facts. The OpenCV baseline itself did not move: measured
 interleaved on the same clip, opencv-python 4.13.0.92 and 5.0.0.93 decode at the
