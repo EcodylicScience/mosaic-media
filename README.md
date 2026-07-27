@@ -14,87 +14,60 @@ kept independent.
 
 ```
 mosaic-media          probe, verdict, transcode, reader, CLI
-    ^          ^
-    |          |
-mosaic_api    mosaic
+    ^
+    |
+ consumers            e.g. mosaic (animal behavior analysis toolkit), a backend
 ```
 
-`mosaic_api` (the FastAPI backend) and `mosaic` (the animal behavior analysis
-toolkit) both consume this package; it imports neither. The one-way direction
-is what makes the CLI mount and the job wiring legal (see "CLI composition").
+Higher-level tools depend on this package; it imports none of them. `mosaic`
+(the animal behavior analysis toolkit) is one such consumer. The one-way
+direction is what makes the CLI mount and the job wiring legal (see "CLI
+composition").
 
-Everything described here is implemented, covered by the test suite and a
-performance regression gate. What remains is the consumer migration:
-`mosaic_api` still carries the original copy of the probe code this package
-was extracted from, kept identical until its migration deletes it, and
-`mosaic` still decodes through OpenCV.
+
+## Installation
+
+```bash
+pip install mosaic-media          # core: probe, verdict, transcode, thumbnails
+pip install "mosaic-media[io]"    # + in-process libav reader/writer (numpy, av)
+pip install "mosaic-media[cli]"   # + the mosaic-media command line app
+```
+
+The core is standard library only (see "Layering and optional dependencies").
+`ffmpeg` and `ffprobe` must be on `PATH` for the probe, the transcode, and the
+CLI -- version 5.1 or newer at runtime; the in-process reader decodes through
+`av` and needs no ffmpeg binary.
+
+```python
+from mosaic_media import probe_media
+
+facts = probe_media("recording.mp4")
+print(facts.frame_count, facts.fps, facts.video_uuid)
+```
+
+The probe runs once at ingestion, and its `MediaFacts` travel forward as the
+authoritative metadata; consumers inject them rather than re-measuring (see
+"Metadata authority").
 
 
 ## Why this package exists
 
-The probe was written in `mosaic_api`, where video is ingested. Three things
-argued for moving it below both consumers:
+The probe began life inside the backend where video is ingested. Three things
+argued for moving it below its consumers into a package of its own:
 
-- `mosaic` needs the same measurements. Its `get_video_metadata` reads OpenCV
-  properties, falls back to a one-off ffprobe call for frame rate, and counts
-  frames by decoding the whole file. The probe's packet scan answers all of it
-  without decoding a frame.
+- `mosaic` needs the same measurements, and its earlier metadata path read
+  OpenCV properties, fell back to a one-off ffprobe call for frame rate, and
+  counted frames by decoding the whole file. The probe's packet scan answers
+  all of it without decoding a frame.
 - The transcode runner needs the verdict: the reason a file failed selects the
   command that fixes it, and a CLI runner for transcode jobs cannot sit above
   the API.
 - The reader needs the packet index the probe already produces (see "The
   reader").
 
-
-## Adopting this package
-
-Two migration guides inventory the consumer call sites we found and suggest a
-migration order. They come from a survey of the code at a point in time; line
-numbers drift, symbol names are the stable anchors, and where a guide
-disagrees with the code, the code wins.
-
-- `docs/migration-mosaic-api.md` -- the backend. Mostly closing the
-  duplication window: delete the internal `media_probe/` copy and rewire its
-  consumers onto this package. `mosaic_api` reads no frames server-side, so
-  the core alone is enough -- no extras.
-- `docs/migration-mosaic.md` -- the toolkit. The larger surface: metadata
-  probing, sequential and random-access decode, multi-video sequences, video
-  writing, capability probes, and the CLI mount, with an explicit list of the
-  codec-free OpenCV image operations that stay.
-
-Wiring is an editable path dependency, following the `mosaic-behavior`
-precedent already in `mosaic_api`:
-
-```toml
-[project]
-dependencies = [
-    "mosaic-media",           # mosaic_api: core only
-    # "mosaic-media[io,cli]"  # mosaic: reader, writer, CLI mount
-]
-
-[tool.uv.sources]
-mosaic-media = { path = "../mosaic_media", editable = true }
-```
-
-An editable path beats released versions while `MediaFacts` is still growing
-fields: every added measurement touches `facts.py` here and `FACT_FIELDS` in
-`mosaic_api` as one logical change across two repositories, and a
-release-and-bump cycle would be paid on every field.
-
-Migrating `mosaic_api` first is the easier order -- its rewire is mechanical
-and behavior-identical -- but nothing breaks if the toolkit goes first. One
-constraint holds regardless of order: the transcode must not run against
-production datasets before the toolkit can decode the transcode codec
-(currently AV1; the reader migration provides that), or the stack produces
-files its own toolkit cannot read.
-
-What changes for consumers is small, and loud rather than silent: errors raise
-(`MediaProbeError`, `TranscodeError`) instead of returning sentinel values,
-frame counts are measured from packet timestamps rather than declared by
-headers, and the ingestion probe's `MediaFacts` travel forward as the metadata
-authority -- consumers inject them (`VideoReader(path, facts=..., index=...)`,
-`MultiVideoReader(paths, facts=..., indices=...)`) instead of re-measuring.
-The guides list each difference with its call sites.
+Consumers wire it as an editable path dependency during development, following
+the `mosaic-behavior` precedent, and pin a compatible range
+(`mosaic-media>=0.2.0,<0.3.0`) otherwise -- see "Versioning".
 
 
 ## Layering and optional dependencies
@@ -107,11 +80,11 @@ The guides list each difference with its call sites.
 
 The core is standard library only so the transcode runner can start on a
 machine that has ffmpeg and nothing else -- a minimal container, or a tracking
-box without the analysis stack. An import test guards this; `mosaic_api`
-depends on the core and pulls neither numpy nor typer through it. numpy would
-do `timing.py`'s grid fit far faster (measured once during development at
-roughly eighty times), but that is under one percent of a probe, and it would
-cost the ffmpeg-only deployment.
+box without the analysis stack. An import test guards this: a consumer that
+needs only the core pulls neither numpy nor typer through it. numpy would do
+`timing.py`'s grid fit far faster (measured once during development at roughly
+eighty times), but that is under one percent of a probe, and it would cost the
+ffmpeg-only deployment.
 
 System requirements: the probe, the transcode, and the CLI shell out to
 `ffmpeg` and `ffprobe` on `PATH` -- version 5.1 or newer at runtime
@@ -199,9 +172,9 @@ python -c "import cv2; print(cv2.getBuildInformation())" | grep -i -A5 "Video I/
 The transcode codec is currently AV1 (see "Why AV1 and not H.264"; the choice
 is still open to discussion), and the wheel cannot decode it, so a file
 transcoded for analysis could not be read back by a toolkit that decodes
-through OpenCV. Owning the decode stack is therefore a prerequisite of any
-modern codec, AV1 or a successor; the sequencing constraint under "Adopting
-this package" follows from it. Choosing AV1 did not create the problem -- the
+through OpenCV -- which is why `mosaic` decodes through this package's reader,
+not OpenCV. Owning the decode stack is a prerequisite of any modern codec, AV1
+or a successor. Choosing AV1 did not create the problem -- the
 wheel decodes H.264 and H.265 only because those decoders are built into
 libavcodec, while AV1's (dav1d, libaom) are external libraries the wheel
 omits; AV1 is simply the first codec this stack uses that exposes the
@@ -418,37 +391,12 @@ consumer reading a format tag is reimplementing the digest; `IDENTITY_SCHEME` is
 the opposite case, a recorded fact a consumer compares against a stored one.
 
 
-## Extraction boundary
+## License
 
-The code was extracted from `mosaic_api/src/mosaic_api/media_probe/`. The
-boundary is semantic, not mechanical: the original package had no external or
-database imports anywhere, so what moved was decided by domain -- media
-measurement moved, backend vocabulary stayed.
+Apache License 2.0 -- see [LICENSE](LICENSE).
 
-### Extraction inventory
-
-| Module | Destination | Reason |
-| --- | --- | --- |
-| `errors.py` | mosaic-media | Media-domain error type. |
-| `ffprobe.py` | mosaic-media | Header read and packet scan. |
-| `timing.py` | mosaic-media | Grid fit over packet timestamps. |
-| `gop.py` | mosaic-media | Seek cost in bytes and frames. |
-| `boxes.py` | mosaic-media | ISOBMFF `moov` placement. |
-| `facts.py` | mosaic-media | `MediaFacts`, the measurement result. |
-| `probe.py` | mosaic-media | Composes the above into one scan. |
-| `candidates.py` | mosaic-media | Video extension set. |
-| `policy.py` | mosaic-media | The `PlaybackProfile` and `Thresholds` types; which profile to apply stays with the caller. |
-| `verdict.py` | mosaic-media | Reason sets; the transcode selects commands from them. |
-| `downscale.py`, `thumbnail.py` | mosaic-media | ffmpeg-produced derivatives, the converter's family. |
-| `media_types.py` | stays in `mosaic_api` | Container to HTTP `Content-Type`; a download and `<source type>` concern. |
-| `facts_io.py` | stays in `mosaic_api` | Names the backend's persistence columns. It never imported the ORM -- it is written against a structural `Protocol` -- and stays for what it encodes, not what it imports. |
-| `sequence.py` | split | The uniformity check and `canonical_fps` moved (the multi-video reader validates sequences with them); `duplicate_stems` stayed (backend storage layout). |
-
-
-## Open questions
-
-- **Scope ceiling.** Whether `mosaic`'s remaining media I/O (the imgstore
-  index layer, the reader dispatchers) eventually moves here under `[io]`,
-  leaving `mosaic` with image processing only. The extras split is arranged so
-  this could happen without touching the standard-library core; nothing forces
-  the decision yet.
+The package shells out to the system `ffmpeg`/`ffprobe` binaries and, for the
+`[io]` extra, uses PyAV. Those components are not distributed with this package
+and carry their own licenses (FFmpeg is LGPL-2.1-or-later, or GPL if built with
+GPL-only components; PyAV is BSD-3-Clause); redistributors who bundle them must
+observe those licenses independently.

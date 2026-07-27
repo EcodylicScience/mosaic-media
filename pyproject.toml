@@ -8,6 +8,9 @@ version = "0.2.0"
 description = "Media probing, transcode planning, and frame reading through system ffmpeg."
 readme = "README.md"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Ecodylic Science" }]
 dependencies = []
 
 [project.optional-dependencies]
