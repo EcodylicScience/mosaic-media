@@ -31,6 +31,7 @@ edited to make a run pass.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -49,7 +50,10 @@ from tests.helpers.corpus import generate_video
 #
 # 900 frames at 1080p is far too large to commit, so the clips are generated,
 # and a machine without the encoder cannot run the gate at all.
-BENCH_CODEC = "libx264"
+#
+# The name is overridable so a test can drive the absent-encoder path on a
+# machine that has the encoder; nothing else reads the variable.
+BENCH_CODEC = os.environ.get("MOSAIC_MEDIA_BENCH_CODEC", "libx264")
 
 
 def _bench_encoder_available() -> bool:
@@ -69,6 +73,7 @@ def _bench_encoder_available() -> bool:
     )
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
@@ -77,6 +82,11 @@ def pytest_collection_modifyitems(
     A skip would report a green run that measured nothing, and a failure would
     read as a regression in the code rather than a missing tool. Neither is
     true, so the session stops and says which it is.
+
+    `trylast` is load-bearing: marker deselection is itself implemented in this
+    hook, so an earlier position sees the bench items the default run
+    (`-m 'not bench'`) is about to drop, and ends every ordinary run on a
+    machine without the encoder.
     """
     del config
     selected = [item for item in items if item.get_closest_marker("bench") is not None]
