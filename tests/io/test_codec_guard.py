@@ -4,7 +4,7 @@ A bundled decoder's codec table is curated and shifts between releases (PyAV
 v17 dropped libaom from its wheels). This test turns that table from a trusted
 property into a tested one: system ffmpeg -- the producer of record for every
 transcode -- encodes the codecs this stack writes, and av must decode a frame
-of each; av must round-trip its own h264 encode; and av must open and decode a
+of each; av must round-trip its own av1 encode; and av must open and decode a
 frame from every container format the fixture corpus exercises. A failure means
 the installed av cannot serve this package's codec set; the remedy is to pin a
 different av release or build `av --no-binary av` against system libav.
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers.media_fixtures import build
+from tests.helpers.media_fixtures import asset, build
 
 av = pytest.importorskip("av")
 
@@ -33,7 +33,9 @@ def _decode_one(path: Path) -> int:
 
 
 def test_av_decodes_system_ffmpeg_h264(tmp_path: Path) -> None:
-    clip = build(tmp_path / "h264.mp4", "-c:v", "libx264", "-pix_fmt", "yuv420p")
+    # H.264 is read, never written: the decoder is native and LGPL, while every
+    # software encoder for it is GPL. The clip is committed for that reason.
+    clip = asset("cfr.mp4", tmp_path / "h264.mp4")
     assert _decode_one(clip) > 0, _REMEDY
 
 
@@ -42,12 +44,12 @@ def test_av_decodes_system_ffmpeg_av1(tmp_path: Path) -> None:
     assert _decode_one(clip) > 0, _REMEDY
 
 
-def test_av_round_trips_its_own_h264_encode(tmp_path: Path) -> None:
+def test_av_round_trips_its_own_av1_encode(tmp_path: Path) -> None:
     import numpy
 
     output = tmp_path / "roundtrip.mp4"
     with av.open(str(output), mode="w") as container:
-        stream = container.add_stream("libx264", rate=30)
+        stream = container.add_stream("libsvtav1", rate=30)
         stream.width = 160
         stream.height = 120
         stream.pix_fmt = "yuv420p"

@@ -1,15 +1,23 @@
 """BGR-frame video writer through in-process libav bindings (PyAV). Requires numpy and av.
 
-Raw bgr24 frames are fed to av's libx264 encoder, or to h264_nvenc when the
+Raw bgr24 frames are fed to av's libsvtav1 encoder, or to av1_nvenc when the
 caller permits hardware AND a cached usability probe confirms the device
 actually encodes -- listing an encoder is not proof it runs. Output stays
-mp4/h264/yuv420p. Shape and dtype are validated per write; an open failure, an
+mp4/av1/yuv420p. Shape and dtype are validated per write; an open failure, an
 unwritable format, or an encode error surfaces as MediaProbeError rather than a
 silently incremented frame count.
+
+AV1 rather than H.264 because FFmpeg's only software H.264 encoders are libx264
+and libx264rgb, both GPL-2.0-or-later. PyAV links FFmpeg into the calling
+process, so naming one here links GPL code into every consumer of this package.
+AV1 is also what the transcode path targets, so the writer and the transcode
+produce the same codec.
 """
 
+import warnings
 from fractions import Fraction
 from pathlib import Path
+from typing import Literal
 
 import av
 import av.error
@@ -24,15 +32,62 @@ from ..probe.errors import MediaProbeError
 
 _nvenc_usable_cache: bool | None = None
 
+# x264's named presets, in the order libx264 defined them, mapped onto SVT-AV1's
+# numeric scale (0 slowest, 13 fastest). Accepted only from the deprecated
+# `preset` parameter; SVT-AV1's own values go to `av1_preset`.
+X264Preset = Literal[
+    "ultrafast",
+    "superfast",
+    "veryfast",
+    "faster",
+    "fast",
+    "medium",
+    "slow",
+    "slower",
+    "veryslow",
+    "placebo",
+]
+_AV1_PRESET_FROM_X264: dict[X264Preset, int] = {
+    "ultrafast": 13,
+    "superfast": 12,
+    "veryfast": 11,
+    "faster": 10,
+    "fast": 9,
+    "medium": 8,
+    "slow": 6,
+    "slower": 4,
+    "veryslow": 2,
+    "placebo": 0,
+}
+
+# x264 rates 0-51, SVT-AV1 0-63, and the same number is a different picture on
+# each. The offset lines up the defaults this writer shipped with (x264 23 ->
+# AV1 30) and holds across the useful middle of both scales. Approximate by
+# construction: measuring the real mapping is the subject of
+# docs/issues/encoding-presets-unmeasured-against-quality-goals.md.
+_X264_TO_AV1_CRF_OFFSET = 7
+
+DEFAULT_AV1_CRF = 30
+DEFAULT_AV1_PRESET = 8
+
+# av1_nvenc rates 0-51 like x264 and names its presets p1 (slowest) to p7; the
+# integer scale it also accepts means something else again, so a SVT-AV1 preset
+# must never be forwarded to it. p4 is the encoder's own default.
+_NVENC_PRESET = "p4"
+
+
+def _av1_crf_from_x264(crf: int) -> int:
+    return min(63, max(0, crf + _X264_TO_AV1_CRF_OFFSET))
+
 
 def _nvenc_encoder_usable() -> bool:
-    """Whether h264_nvenc actually opens on this machine. Cached: the probe
-    constructs and opens a tiny encoder context once; a GPU-less machine raises
-    even though the wheel lists the encoder."""
+    """Whether av1_nvenc actually opens on this machine. Cached: the probe
+    constructs and opens a tiny encoder context once; a machine without an
+    AV1-capable NVIDIA device raises even though the build lists the encoder."""
     global _nvenc_usable_cache
     if _nvenc_usable_cache is None:
         try:
-            context = CodecContext.create("h264_nvenc", "w")
+            context = CodecContext.create("av1_nvenc", "w")
             if isinstance(context, VideoCodecContext):
                 context.width = 16
                 context.height = 16
@@ -52,10 +107,26 @@ class FFmpegVideoWriter:
         width: int,
         height: int,
         fps: float = 30.0,
-        crf: int = 23,
-        preset: str = "medium",
+        crf: int | None = None,
+        preset: X264Preset | None = None,
         hwaccel: bool = False,
+        av1_crf: int = DEFAULT_AV1_CRF,
+        av1_preset: int = DEFAULT_AV1_PRESET,
     ) -> None:
+        """Write bgr24 frames to `output_path` as mp4/av1/yuv420p.
+
+        `av1_crf` (0-63) and `av1_preset` (0 slowest to 13 fastest) are SVT-AV1's
+        own scales. The defaults aim at the picture x264 crf 23 / preset medium
+        gave, for the visualization output this writer produces; they are not
+        measured, and choosing them from real footage is the subject of
+        docs/issues/encoding-presets-unmeasured-against-quality-goals.md.
+
+        `crf` and `preset` are the x264-scale parameters this writer accepted
+        while it encoded H.264. They still mean x264's scales and are translated
+        forward, so an existing caller keeps the picture it asked for; both are
+        deprecated and warn.
+        """
+        av1_crf, av1_preset = self._resolve_quality(crf, preset, av1_crf, av1_preset)
         # Set first so __del__ -> close() is safe even if a later line raises:
         # close() reads _closed and _container, so both must exist before the
         # path resolution and container open below can raise.
@@ -68,7 +139,7 @@ class FFmpegVideoWriter:
         self._fps: float = fps
         self._frames_written: int = 0
         self._encoder_name: str = (
-            "h264_nvenc" if (hwaccel and _nvenc_encoder_usable()) else "libx264"
+            "av1_nvenc" if (hwaccel and _nvenc_encoder_usable()) else "libsvtav1"
         )
         try:
             container = av.open(str(self._output_path), mode="w")
@@ -87,12 +158,67 @@ class FFmpegVideoWriter:
         stream.width = width
         stream.height = height
         stream.pix_fmt = "yuv420p"
-        if self._encoder_name == "libx264":
-            stream.options = {"preset": preset, "crf": str(crf)}
+        if self._encoder_name == "libsvtav1":
+            stream.options = {"preset": str(av1_preset), "crf": str(av1_crf)}
         else:
-            stream.options = {"preset": preset, "cq": str(crf)}
+            # av1_nvenc's scales are its own: cq runs 0-51 and its presets are
+            # named. Forwarding SVT-AV1's numbers would land on a different
+            # meaning in both fields.
+            nvenc_cq = max(0, av1_crf - _X264_TO_AV1_CRF_OFFSET)
+            stream.options = {"preset": _NVENC_PRESET, "cq": str(nvenc_cq)}
+        self._av1_crf: int = av1_crf
+        self._av1_preset: int = av1_preset
         self._container = container
         self._stream: VideoStream = stream
+
+    @staticmethod
+    def _resolve_quality(
+        crf: int | None,
+        preset: X264Preset | None,
+        av1_crf: int,
+        av1_preset: int,
+    ) -> tuple[int, int]:
+        """Fold the deprecated x264-scale arguments into SVT-AV1's scales.
+
+        A caller that passed x264 values keeps the picture it asked for: the
+        rate is offset onto SVT-AV1's range and the named preset is looked up.
+        Passing both forms is a conflict rather than a precedence puzzle.
+        """
+        if crf is None and preset is None:
+            return av1_crf, av1_preset
+        if crf is not None and av1_crf != DEFAULT_AV1_CRF:
+            message = "pass either crf (x264 scale, deprecated) or av1_crf, not both"
+            raise MediaProbeError(message)
+        if preset is not None and av1_preset != DEFAULT_AV1_PRESET:
+            message = (
+                "pass either preset (x264 scale, deprecated) or av1_preset, not both"
+            )
+            raise MediaProbeError(message)
+        named = ", ".join(sorted(_AV1_PRESET_FROM_X264))
+        if preset is not None and preset not in _AV1_PRESET_FROM_X264:
+            message = f"unknown x264 preset {preset!r}; expected one of {named}"
+            raise MediaProbeError(message)
+        scales = "av1_crf (0-63) and av1_preset (0 slowest to 13 fastest)"
+        deprecation = (
+            f"FFmpegVideoWriter's crf and preset arguments are x264's scales and "
+            f"are deprecated; this writer encodes AV1. Use {scales}."
+        )
+        warnings.warn(deprecation, DeprecationWarning, stacklevel=3)
+        resolved_crf = av1_crf if crf is None else _av1_crf_from_x264(crf)
+        resolved_preset = (
+            av1_preset if preset is None else _AV1_PRESET_FROM_X264[preset]
+        )
+        return resolved_crf, resolved_preset
+
+    @property
+    def av1_crf(self) -> int:
+        """The SVT-AV1 rate in force, after any x264-scale argument was folded in."""
+        return self._av1_crf
+
+    @property
+    def av1_preset(self) -> int:
+        """The SVT-AV1 preset in force, after any x264-scale argument was folded in."""
+        return self._av1_preset
 
     @property
     def output_path(self) -> Path:

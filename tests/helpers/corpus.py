@@ -23,7 +23,7 @@ def generate_video(
     fps: float = 30.0,
     gop: int = 30,
     size: tuple[int, int] = (320, 240),
-    codec: str = "libx264",
+    codec: str = "libsvtav1",
     rotation_degrees: int = 0,
 ) -> Path:
     """Generate a testsrc2 clip of exactly `frames` frames at `fps` with a
@@ -93,7 +93,7 @@ def generate_vfr_video(
             "-fps_mode",
             "vfr",
             "-c:v",
-            "libx264",
+            "libsvtav1",
             "-pix_fmt",
             "yuv420p",
             "-g",

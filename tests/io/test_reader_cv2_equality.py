@@ -9,6 +9,11 @@ swap, a wrong returned frame, a BT.601/709 matrix mixup -- moves whole regions o
 the frame by far more than two levels, so a tolerance of 2 separates them cleanly
 from conversion noise. Exact-byte duty is carried elsewhere, by the framemd5
 goldens that hash the decoded frame in the reader's own pixel format.
+
+These read `h264_gop12_clip`, not the AV1 corpus the rest of the reader tests
+use: OpenCV's bundled FFmpeg cannot software-decode AV1, so it cannot supply a
+comparison at all. The clip has the corpus's shape -- 48 frames, 30 fps,
+keyframe every 12 -- in a codec both decoders read.
 """
 
 from pathlib import Path
@@ -39,31 +44,31 @@ def _max_channel_difference(a: numpy.ndarray, b: numpy.ndarray) -> int:
     return int(numpy.abs(a.astype(numpy.int16) - b.astype(numpy.int16)).max())
 
 
-def test_sequential_matches_cv2(corpus_gop12: Path) -> None:
+def test_sequential_matches_cv2(h264_gop12_clip: Path) -> None:
     pytest.importorskip("cv2")
-    cv2_frames = _cv2_all_frames(corpus_gop12)
-    with VideoReader(corpus_gop12) as reader:
+    cv2_frames = _cv2_all_frames(h264_gop12_clip)
+    with VideoReader(h264_gop12_clip) as reader:
         ours = [frame for _index, frame in reader]
     assert len(ours) == len(cv2_frames)
     for mine, theirs in zip(ours, cv2_frames):
         assert _max_channel_difference(mine, theirs) <= 2
 
 
-def test_strided_matches_cv2(corpus_gop12: Path) -> None:
+def test_strided_matches_cv2(h264_gop12_clip: Path) -> None:
     pytest.importorskip("cv2")
-    cv2_frames = _cv2_all_frames(corpus_gop12)
+    cv2_frames = _cv2_all_frames(h264_gop12_clip)
     expected = cv2_frames[::4]
-    with VideoReader(corpus_gop12, frame_step=4) as reader:
+    with VideoReader(h264_gop12_clip, frame_step=4) as reader:
         ours = [frame for _index, frame in reader]
     assert len(ours) == len(expected)
     for mine, theirs in zip(ours, expected):
         assert _max_channel_difference(mine, theirs) <= 2
 
 
-def test_seek_matches_cv2(corpus_gop12: Path) -> None:
+def test_seek_matches_cv2(h264_gop12_clip: Path) -> None:
     pytest.importorskip("cv2")
-    cv2_frames = _cv2_all_frames(corpus_gop12)
-    with VideoReader(corpus_gop12) as reader:
+    cv2_frames = _cv2_all_frames(h264_gop12_clip)
+    with VideoReader(h264_gop12_clip) as reader:
         for target in (0, 7, 12, 15, 24, 40):
             reader.seek(target)
             ok, frame = reader.read()

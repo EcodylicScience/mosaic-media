@@ -243,11 +243,13 @@ it persisted stores it alongside the derivative's own facts.
 ### Why AV1 and not H.264
 
 AV1 is the current choice, not a settled constant -- the discussion stays
-open. Encoder selection is confined to the transcode layer and playback
-support is injected profile policy, so revisiting the choice would not ripple
-through consumers. The case for AV1 today: the derivatives are a permanent
-second copy of every defective upload, which makes the codec choice a storage
-decision first.
+open. Encoder selection lives in two places, the transcode layer and the
+in-process writer, and playback support is injected profile policy, so
+revisiting the choice would touch those two and not ripple through consumers.
+One constraint is fixed rather than open: whatever the codec, it cannot be one
+whose only encoders are GPL, because PyAV links FFmpeg into the caller. The
+case for AV1 today: the derivatives are a permanent second copy of every
+defective upload, which makes the codec choice a storage decision first.
 
 - Lower bitrate than H.264 at equal perceptual quality: published encoder
   comparisons typically report 30-50% BD-rate savings, varying by encoder,
@@ -400,3 +402,12 @@ The package shells out to the system `ffmpeg`/`ffprobe` binaries and, for the
 and carry their own licenses (FFmpeg is LGPL-2.1-or-later, or GPL if built with
 GPL-only components; PyAV is BSD-3-Clause); redistributors who bundle them must
 observe those licenses independently.
+
+A subprocess call to `ffmpeg` is unaffected by that binary's license, but PyAV
+links FFmpeg into the calling process, so reaching a GPL-only encoder that way
+-- `libx264` and `libx265`, the only software H.264 and HEVC encoders FFmpeg
+has -- would extend the GPL to consumers of this package. Nothing here names
+one: the writer encodes AV1 through `libsvtav1`, decoding is unaffected because
+FFmpeg's H.264 and HEVC decoders are native and LGPL, and the few test clips
+that must genuinely be H.264 are committed under `tests/assets/` rather than
+encoded, so the suite runs against the same LGPL FFmpeg a deployment can ship.

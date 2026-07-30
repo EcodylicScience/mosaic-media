@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers.media_fixtures import build
+from tests.helpers.media_fixtures import asset, build
 
 
 @pytest.fixture(scope="session")
@@ -31,7 +31,7 @@ def variable_frame_rate_mp4(tmp_path_factory: pytest.TempPathFactory) -> Iterato
         "-fps_mode",
         "passthrough",
         "-c:v",
-        "libx264",
+        "libsvtav1",
         "-pix_fmt",
         "yuv420p",
         source=["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=50:duration=2"],
@@ -58,7 +58,7 @@ def slow_reencode_source(tmp_path_factory: pytest.TempPathFactory) -> Iterator[P
         "-fps_mode",
         "passthrough",
         "-c:v",
-        "libx264",
+        "libsvtav1",
         "-pix_fmt",
         "yuv420p",
         source=["-f", "lavfi", "-i", "testsrc2=size=512x384:rate=30:duration=5"],
@@ -68,19 +68,10 @@ def slow_reencode_source(tmp_path_factory: pytest.TempPathFactory) -> Iterator[P
 @pytest.fixture(scope="session")
 def lying_header_mkv(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     root = tmp_path_factory.mktemp("lying_header")
-    # A raw H.264 elementary stream whose SPS VUI advertises 25 fps.
-    raw = build(
-        root / "raw25.h264",
-        "-c:v",
-        "libx264",
-        "-bf",
-        "0",
-        "-pix_fmt",
-        "yuv420p",
-        "-f",
-        "h264",
-        source=["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=3"],
-    )
+    # A raw H.264 elementary stream whose SPS VUI advertises 25 fps. Committed
+    # rather than encoded: the lie lives in H.264's SPS VUI, so no other codec
+    # can stand in, and an LGPL FFmpeg cannot produce H.264.
+    raw = asset("raw25.h264", root / "raw25.h264")
     # Mux that stream into Matroska at 30 fps: the packet timestamps run at 30
     # while avg_frame_rate keeps the advertised 25 -- a header that lies about the
     # rate (a 16.7% discrepancy) over otherwise-uniform, constant-rate timing.
@@ -98,17 +89,7 @@ def lying_header_mkv(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]
 def h264_in_avi(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     root = tmp_path_factory.mktemp("h264_avi")
     # h264 is a codec Chrome decodes; AVI is a container it cannot open. The
-    # playback fix is a `-c copy` rewrap into mp4, not a re-encode. `-bf 0` keeps
-    # the copy to mp4 free of B-frame reordering trouble.
-    yield build(
-        root / "h264.avi",
-        "-c:v",
-        "libx264",
-        "-bf",
-        "0",
-        "-pix_fmt",
-        "yuv420p",
-        "-g",
-        "25",
-        source=["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=2"],
-    )
+    # playback fix is a `-c copy` rewrap into mp4, not a re-encode. The committed
+    # clip carries `-bf 0`, which keeps that copy free of B-frame reordering
+    # trouble. The codec is the point of the case, so no substitute serves.
+    yield asset("h264.avi", root / "h264.avi")

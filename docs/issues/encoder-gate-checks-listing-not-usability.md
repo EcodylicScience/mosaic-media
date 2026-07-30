@@ -8,7 +8,7 @@ ffmpeg builds list `h264_nvenc` and `av1_nvenc` on machines with no usable
 NVIDIA device (this machine does). The decode side was fixed to probe real
 device usability (`nvdec_available` now runs an `-init_hw_device cuda` null
 decode), but both encode-side consumers still gate on the listing:
-`FFmpegVideoWriter` (`hwaccel and encoder_available("h264_nvenc")`) and the
+`FFmpegVideoWriter` (`hwaccel and encoder_available("av1_nvenc")`) and the
 transcode command builder (`allow_hardware and
 encoder_available("av1_nvenc")`). With permission granted on a GPU-less
 machine, both select an NVENC encoder that fails at startup. The failure is
@@ -46,11 +46,11 @@ mode is loud, opt-in, and absent on default settings.
 
 ## Update (2026-07-17): writer half resolved; transcode half re-scoped
 
-The writer now probes usability idiomatically: it constructs an `h264_nvenc`
+The writer now probes usability idiomatically: it constructs an `av1_nvenc`
 `av.codec.CodecContext` and opens it once (cached); on a GPU-less machine the
 open raises `av.error.PermissionError` even though the wheel lists the
 encoder, so the writer gates hardware encode on caller permission AND that
-probe, falling back to libx264. The writer half of this issue is done.
+probe, falling back to `libsvtav1`. The writer half of this issue is done.
 
 The remaining half is the transcode command builder
 (`transcode/commands.py`, `allow_hardware and
