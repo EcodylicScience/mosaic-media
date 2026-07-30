@@ -507,9 +507,15 @@ def test_transcode_progress_is_indeterminate_for_a_timestampless_source(
     clips: dict[str, Path], tmp_path: Path
 ) -> None:
     # A raw elementary stream carries no timestamps, so it probes a duration of
-    # 0.0 and its remux cannot report a completion fraction. Every update is
-    # indeterminate (fraction None), but the raw out_time still comes through so a
-    # caller can show that the run is progressing.
+    # 0.0 and no completion fraction is knowable. The run still reports: updates
+    # arrive for a caller to drive an indeterminate display, and not one of them
+    # invents a fraction from the unknown duration. Which raw readings accompany
+    # them is not asserted, because it is a property of the ffmpeg build rather
+    # than of this package: ffmpeg reports as N/A every reading it cannot
+    # compute, and a copy remux of packets that reach the muxer without
+    # timestamps is the case where it computes none of them. The determinate
+    # half of the contract -- a known duration does yield a fraction, driven by
+    # the out_time reading -- is pinned by the monotonic-fraction test above.
     source = clips["raw_h264"]
     facts = probe_media(source)
     assert facts.duration == 0.0
@@ -530,7 +536,6 @@ def test_transcode_progress_is_indeterminate_for_a_timestampless_source(
     assert result.operation is Operation.REMUX_TIMEBASE
     assert updates
     assert all(update.fraction is None for update in updates)
-    assert any(update.out_time is not None for update in updates)
 
 
 class _CancelAfterFirstProgress:

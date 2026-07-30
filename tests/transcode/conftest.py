@@ -68,20 +68,22 @@ def slow_reencode_source(tmp_path_factory: pytest.TempPathFactory) -> Iterator[P
 @pytest.fixture(scope="session")
 def lying_header_mkv(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     root = tmp_path_factory.mktemp("lying_header")
-    # A raw H.264 elementary stream whose SPS VUI advertises 25 fps. Committed
-    # rather than encoded: the lie lives in H.264's SPS VUI, so no other codec
-    # can stand in, and an LGPL FFmpeg cannot produce H.264.
-    raw = asset("raw25.h264", root / "raw25.h264")
-    # Mux that stream into Matroska at 30 fps: the packet timestamps run at 30
-    # while avg_frame_rate keeps the advertised 25 -- a header that lies about the
-    # rate (a 16.7% discrepancy) over otherwise-uniform, constant-rate timing.
-    # `-c copy -fflags +genpts` into mp4 recomputes avg_frame_rate from the real
-    # packets (to within 0.3% of 30) and clears unreliable_timing_metadata.
+    source = asset("cfr.mp4", root / "cfr.mp4")
+    # Matroska stores the declared average rate in its own track header, taken
+    # from the stream handed to the muxer rather than from the packets written.
+    # `-itsscale` rescales the input timestamps and nothing else, so a `-c copy`
+    # of this 25 fps clip at scale 1.25 leaves 25 fps in the header over packets
+    # spaced at 20 -- a header that lies about the rate (a 25% discrepancy) over
+    # otherwise-uniform, constant-rate timing. The stretched 50 ms period is
+    # exact in Matroska's millisecond timebase, so nothing requantizes and the
+    # whole-file grid fit still measures a constant rate. `-c copy -fflags
+    # +genpts` into mp4 recomputes avg_frame_rate from the real packets and
+    # clears unreliable_timing_metadata.
     yield build(
         root / "lying_header.mkv",
         "-c",
         "copy",
-        source=["-r", "30", "-i", str(raw)],
+        source=["-itsscale", "1.25", "-i", str(source)],
     )
 
 

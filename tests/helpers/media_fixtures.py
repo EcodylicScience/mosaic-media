@@ -36,7 +36,6 @@ AssetName = Literal[
     "h264_gop12.mp4",
     "long_gop.mp4",
     "raw.h264",
-    "raw25.h264",
 ]
 
 

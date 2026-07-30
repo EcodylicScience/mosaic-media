@@ -80,8 +80,12 @@ class TranscodeProgress:
     duration is unknown: a timestampless stream (a raw elementary stream) probes a
     duration of 0.0, and those are exactly the files the analysis verdict
     transcodes. `out_time` (seconds encoded so far), `speed` (the realtime
-    multiple), and `fps` are the raw ffmpeg readings, carried through so a caller
-    can still show indeterminate progress when `fraction` is None.
+    multiple), and `fps` are ffmpeg's own readings, carried through unchanged.
+    Each is None when ffmpeg reports it as N/A, which it does for any reading it
+    cannot compute for the run in hand: a copy remux of packets that reach the
+    muxer without timestamps reports none of the three, so an update can arrive
+    with every field None. A caller therefore drives an indeterminate display off
+    the arrival of updates and annotates it with whichever readings are present.
     """
 
     fraction: float | None

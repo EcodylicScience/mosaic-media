@@ -1,3 +1,5 @@
+import gc
+import warnings
 from pathlib import Path
 
 import numpy
@@ -149,6 +151,13 @@ def test_deprecated_x264_crf_maps_onto_the_av1_scale(tmp_path: Path) -> None:
 
 
 def test_x264_and_av1_quality_arguments_conflict(tmp_path: Path) -> None:
+    # -W error turns __del__'s cleanup into a failure rather than an ignored
+    # exception: a constructor that raises before _closed exists leaves
+    # close() reaching for an attribute that was never set, which surfaces only
+    # as an unraisable warning and is easy to walk past.
     output = tmp_path / "conflict.mp4"
-    with pytest.raises(MediaProbeError):
-        _ = FFmpegVideoWriter(output, 64, 48, fps=30.0, crf=23, av1_crf=40)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(MediaProbeError):
+            _ = FFmpegVideoWriter(output, 64, 48, fps=30.0, crf=23, av1_crf=40)
+        _ = gc.collect()

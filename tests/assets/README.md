@@ -57,11 +57,6 @@ ffmpeg -v error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=2" \
 ffmpeg -v error -y -f lavfi -i "testsrc=size=320x240:rate=25:duration=12" \
     -c:v libx264 -pix_fmt yuv420p -g 250 $Q long_gop.mp4
 
-# raw25.h264 -- 75 frames, no container, SPS VUI advertising 25 fps. Remuxed at
-# 30 by its fixture, so the header lies about the rate over uniform timing.
-ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=3" \
-    -c:v libx264 -bf 0 -pix_fmt yuv420p -f h264 $Q raw25.h264
-
 # h264.avi -- 50 frames in a container Chrome cannot open, for the rewrap-not-
 # reencode playback case. -bf 0 keeps the -c copy to mp4 clean.
 ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=2" \

@@ -126,12 +126,13 @@ class FFmpegVideoWriter:
         forward, so an existing caller keeps the picture it asked for; both are
         deprecated and warn.
         """
-        av1_crf, av1_preset = self._resolve_quality(crf, preset, av1_crf, av1_preset)
         # Set first so __del__ -> close() is safe even if a later line raises:
         # close() reads _closed and _container, so both must exist before the
-        # path resolution and container open below can raise.
+        # argument resolution, the path resolution, and the container open below
+        # can raise.
         self._closed: bool = False
         self._container: OutputContainer | None = None
+        av1_crf, av1_preset = self._resolve_quality(crf, preset, av1_crf, av1_preset)
         self._output_path: Path = Path(output_path).expanduser().resolve()
         self._output_path.parent.mkdir(parents=True, exist_ok=True)
         self._width: int = width
