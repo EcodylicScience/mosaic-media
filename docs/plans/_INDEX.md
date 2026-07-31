@@ -8,6 +8,7 @@ tracked file: `git show <hash>:docs/plans/<file>.md` retrieves it.
 
 | Plan | Status | Last tracked | Description |
 | --- | --- | --- | --- |
+| `2026-07-31-raw-elementary-stream-frame-rate.md` | active | - | Task-by-task implementation of the elementary stream rate: the ffprobe header gains the bitstream's declared rate behind a raw-format gate and its fraction parser stops raising on an absent value, `probe_media` selects that rate for a stream with no packet timestamps, the copy remux builder turns it into a `setts` expression, a fractional-rate clip is committed, and the remux is pinned end to end including the absence of the muxer's deprecation notice. |
 | `2026-07-16-scaffold-and-probe-extraction.md` | implemented | 3f4eee2 | Package scaffolding (uv, pyproject, guards) and verbatim probe duplication from mosaic_api, with the sequence.py split, thumbnail subpackage, and hwaccel module. |
 | `2026-07-16-frame-reader-io.md` | implemented | 6efb5ea | The io subpackage: packet byte offsets, seek index, VideoReader with frame-exact seeking, MultiVideoReader, video writer, and correctness suites. |
 | `2026-07-16-perf-regression-gate.md` | implemented | 7704151 | Benchmark harness and the seven consumer-workload regression gates against OpenCV, plus the non-gating probe-cost and cold-seek reports. |
