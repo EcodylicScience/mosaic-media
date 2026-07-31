@@ -1,73 +1,142 @@
 # mosaic-media
 
-Media probing, transcode planning, and frame reading for the Ecodylic stack.
-Distribution name `mosaic-media`, import name `mosaic_media`.
+Media probing, transcode planning, and frame reading. Distribution name
+`mosaic-media`, import name `mosaic_media`. Python 3.12 or newer, Apache-2.0.
 
-The package answers two questions about a video file and executes the ffmpeg
-work that follows from the answers:
+Source: <https://github.com/EcodylicScience/mosaic-media>
+
+The package answers two questions about a video file, then constructs and runs
+the ffmpeg work that follows from the answers:
 
 1. Does it play well in a browser, and does it scrub quickly?
 2. Is it usable for per-frame analyses like tracking?
 
 A file can need a transcode for one and not the other, so the two verdicts are
-kept independent.
-
-```
-mosaic-media          probe, verdict, transcode, reader, CLI
-    ^
-    |
- consumers            e.g. mosaic (animal behavior analysis toolkit), a backend
-```
-
-Higher-level tools depend on this package; it imports none of them. `mosaic`
-(the animal behavior analysis toolkit) is one such consumer. The one-way
-direction is what makes the CLI mount and the job wiring legal (see "CLI
-composition").
+independent. What counts as playable is supplied by the caller, not decided
+here.
 
 
 ## Installation
 
 ```bash
-pip install mosaic-media          # core: probe, verdict, transcode, thumbnails
-pip install "mosaic-media[io]"    # + in-process libav reader/writer (numpy, av)
+pip install mosaic-media          # probe, verdict, transcode, thumbnails
+pip install "mosaic-media[io]"    # + in-process frame reader and writer
 pip install "mosaic-media[cli]"   # + the mosaic-media command line app
 ```
 
-The core is standard library only (see "Layering and optional dependencies").
 `ffmpeg` and `ffprobe` must be on `PATH` for the probe, the transcode, and the
-CLI -- version 5.1 or newer at runtime; the in-process reader decodes through
-`av` and needs no ffmpeg binary.
+CLI: version 5.1 or newer at runtime (`-fps_mode`), 6.0 or newer to run the test
+suite (`-display_rotation`). The `[io]` reader decodes in process and needs no
+ffmpeg binary.
+
+Platforms: developed and tested on Linux. Nothing is platform-specific except
+hardware encoding, which requires the relevant ffmpeg encoder and a device.
+
+
+## Quick start
+
+Probe once. `MediaFacts` is the authoritative metadata from then on: pass it to
+everything downstream rather than re-measuring, because a file that is already
+clean is never rewritten and so cannot be assumed to have canonical bytes.
 
 ```python
-from mosaic_media import probe_media
+from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, derive, probe_media
 
 facts = probe_media("recording.mp4")
 print(facts.frame_count, facts.fps, facts.video_uuid)
+
+verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+print(verdict.analysis_transcode, verdict.stream_transcode)
+print(sorted(verdict.analysis_reasons), sorted(verdict.stream_reasons))
 ```
 
-The probe runs once at ingestion, and its `MediaFacts` travel forward as the
-authoritative metadata; consumers inject them rather than re-measuring (see
-"Metadata authority").
+Both policy objects are yours to supply. `CHROME_149` is the one profile
+shipped, measured against Chrome 149 on Linux. Describe a different target by
+constructing your own:
 
+```python
+from mosaic_media import PlaybackProfile, Thresholds
 
-## Why this package exists
+profile = PlaybackProfile(
+    # ffprobe format_name strings, never file extensions
+    containers=frozenset({"mov,mp4,m4a,3gp,3g2,mj2"}),
+    codecs=frozenset({"h264", "av1"}),
+    client_dependent_codecs=frozenset({"hevc"}),  # plays only on some clients
+    baseline_pixel_formats=frozenset({"yuv420p"}),
+)
+thresholds = Thresholds(drift_frame_periods=0.5)  # the rest keep defaults
+```
 
-The probe began life inside the backend where video is ingested. Three things
-argued for moving it below its consumers into a package of its own:
+`Thresholds` carries every numeric limit the verdict applies, and
+`DEFAULT_THRESHOLDS` is `Thresholds()`: `drift_frame_periods=0.5` (how far a
+frame may sit from its uniform-grid position before the file counts as variable
+rate), `max_gop_bytes=524288`, `max_keyframe_interval_frames=200`,
+`truncation_duration_ratio=0.95`, `start_time_frame_periods=0.5`.
 
-- `mosaic` needs the same measurements, and its earlier metadata path read
-  OpenCV properties, fell back to a one-off ffprobe call for frame rate, and
-  counted frames by decoding the whole file. The probe's packet scan answers
-  all of it without decoding a frame.
-- The transcode runner needs the verdict: the reason a file failed selects the
-  command that fixes it, and a CLI runner for transcode jobs cannot sit above
-  the API.
-- The reader needs the packet index the probe already produces (see "The
-  reader").
+Run the work the verdict calls for:
 
-Consumers wire it as an editable path dependency during development, following
-the `mosaic-behavior` precedent, and pin a compatible range
-(`mosaic-media>=0.2.0,<0.3.0`) otherwise -- see "Versioning".
+```python
+from mosaic_media.transcode import ANALYSIS_ENCODING, run_transcode
+
+result = run_transcode(
+    "recording.mp4", "derived.mp4", "analysis", facts, verdict,
+    profile=CHROME_149, thresholds=DEFAULT_THRESHOLDS,
+    encoding=ANALYSIS_ENCODING,
+)
+if result.performed:
+    print(result.operation, result.output_path)
+    print(result.output_facts.video_uuid, result.source_video_uuid)
+```
+
+`run_transcode` accepts `on_progress` and `cancel_check` callbacks and a
+`timeout`. It returns without writing when the verdict asks for nothing.
+
+Read frames, with the `[io]` extra:
+
+```python
+from mosaic_media.io import VideoReader
+
+# A no-op transcode writes nothing, so read the source in that case.
+path = result.output_path if result.performed else "recording.mp4"
+known = result.output_facts if result.performed else facts
+
+with VideoReader(path, facts=known) as reader:
+    for index, frame in reader:   # frame index, then a BGR numpy array
+        ...
+```
+
+`output_path`, `output_facts`, and `output_verdict` are `None` on a no-op;
+`performed` is what distinguishes the two branches, and `source_video_uuid` is
+populated either way because it describes the input. Passing `facts` skips a
+probe the caller has already paid for.
+`MultiVideoReader` does the same across a list of files, presenting them as one
+sequence.
+
+Everything in the core is importable from `mosaic_media` itself; the two extras
+keep their own namespaces, `mosaic_media.transcode` and `mosaic_media.io`.
+
+Compare two files for duplication:
+
+```python
+from mosaic_media import compare_for_duplicate
+
+print(compare_for_duplicate(facts, probe_media("other.mp4")).verdict)
+```
+
+Thumbnails need no extra:
+
+```python
+from mosaic_media import (
+    downscale_to_jpeg, extract_first_frame, thumbnail_dimensions,
+)
+
+width, height = thumbnail_dimensions(facts.width, facts.height, cap=320)
+extract_first_frame("recording.mp4", "frame.png")
+downscale_to_jpeg("frame.png", "thumb.jpg", width=width, height=height)
+```
+
+`thumbnail_dimensions` returns the `(width, height)` that fits the long edge to
+`cap` while preserving aspect.
 
 
 ## Layering and optional dependencies
@@ -75,269 +144,108 @@ the `mosaic-behavior` precedent, and pin a compatible range
 | Extra | Adds | Contents |
 | --- | --- | --- |
 | `mosaic-media` | standard library only | Probe, verdicts, transcode command construction and converter, thumbnails, capability probing. |
-| `mosaic-media[io]` | `numpy`, `av` | In-process libav (PyAV) frame reader, seek index, multi-video reader, video writer. No OpenCV. |
-| `mosaic-media[cli]` | `typer` | The `mosaic-media` command line app. |
+| `mosaic-media[io]` | `numpy>=1.22`, `av>=18,<19` | In-process frame reader, seek index, multi-video reader, video writer. |
+| `mosaic-media[cli]` | `typer>=0.12` | The `mosaic-media` command line app. |
 
-The core is standard library only so the transcode runner can start on a
-machine that has ffmpeg and nothing else -- a minimal container, or a tracking
-box without the analysis stack. An import test guards this: a consumer that
-needs only the core pulls neither numpy nor typer through it. numpy would do
-`timing.py`'s grid fit far faster (measured once during development at roughly
-eighty times), but that is under one percent of a probe, and it would cost the
-ffmpeg-only deployment.
-
-System requirements: the probe, the transcode, and the CLI shell out to
-`ffmpeg` and `ffprobe` on `PATH` -- version 5.1 or newer at runtime
-(`-fps_mode`), 6.0 or newer for the test suite (`-display_rotation`).
-`VideoReader` decodes in process and needs no ffmpeg binary; its codec table
-is pinned by a codec guard test, and `pip install av --no-binary av` (building
-against the system libav) is the fallback for a locked-down environment.
-`MultiVideoReader` probes each file through ffprobe only when the caller does
-not inject `facts`.
+The core is standard library only so the transcode runner can start on a machine
+that has ffmpeg and nothing else: a minimal container, or a recording box
+without an analysis stack. A test enforces it, so installing the core pulls
+neither numpy nor typer.
 
 
-## Versioning
+## Decoding
 
-Releases follow semantic versioning, with the pre-1.0 convention that a minor
-bump is a breaking change and a patch bump is compatible. A consumer pins a
-range (`mosaic-media>=0.2.0,<0.3.0`); a bare floor would not exclude the next
-breaking release.
+The probe and the transcode run through the system `ffmpeg` binaries; the CLI is
+the terminal interface to both. The probe decodes no frame at all -- it reads
+demultiplexed packets, and returns each one's time, size, and keyframe flag in
+decode order. Only the `[io]` extra decodes and encodes in process, through
+`av`.
 
-The identity scheme is a second, independent number: `IDENTITY_SCHEME`, carried
-in both format tags and recorded on every probe as `MediaFacts.identity_scheme`.
-It moves only when the bytes hashed into `video_uuid` or `content_digest`
-change, and a move re-mints every value in every corpus.
+That packet index is what makes seeking exact. `VideoReader` resolves the
+target's preceding keyframe from the index, seeks the container to that
+keyframe's timestamp, verifies the decoded landing, and counts frames forward,
+using each frame's own recorded timestamp throughout.
 
-The two are coupled in one direction only: **a scheme bump always forces a
-version bump, and a version bump never implies a scheme bump.** Bumping the
-scheme is an edit here that invalidates every stored value, which is a breaking
-release by definition; most releases change nothing that is hashed, so the
-reverse does not follow.
+Neither path uses OpenCV, for two reasons that matter if you are replacing a
+`cv2.VideoCapture` decode path:
 
-They cannot be one number. The scheme's trigger is an ffmpeg upgrade that
-changes libavformat's demuxer output -- the digest is defined against that
-output rather than raw file bytes -- and no API here changes when that happens,
-so a version number has nothing to signal it with. And a shared number would
-fold build metadata into identity: every unrelated release would re-mint every
-uuid in every corpus. Hashing only part of the version does not rescue it --
-past 1.0, an unrelated API break would re-mint everything while a genuine
-format break inside a major line would not.
+- `CAP_PROP_POS_FRAMES` converts a frame index to a timestamp through one
+  average rate, which is exact at constant rate and inexact otherwise.
+- Current `opencv-python` wheels decode zero frames from an AV1 file while
+  reporting a plausible frame count and raising nothing, and the derivatives
+  this package produces are AV1 (`tests/io/test_reader_cv2_equality.py`).
 
+By default `av` installs as a wheel carrying its own FFmpeg build, so the
+reader's codec table is that build's rather than the system one. Where a single
+decode stack matters, `pip install av --no-binary av` builds `av` against the
+system libav, after which the reader and the subprocess paths share one FFmpeg.
 
-## The reader
+A performance gate measures the reader against `cv2.VideoCapture` on metadata
+open, sequential decode, strided decode, and cold random seek, among others. It
+is excluded from the default suite and run explicitly (`pytest -m bench`), on an
+idle machine, because contended measurements swing enough to make the comparison
+meaningless.
 
-The probe's packet scan returns every packet's time, size, and keyframe flag
-in decode order -- the data frame-exact seeking needs. Keeping the reader in
-the same package keeps that index next to its only consumer.
-
-`VideoReader` decodes in process through libav (the `av` package). A seek
-resolves the target's preceding keyframe from the packet index, seeks the
-container to that keyframe's timestamp, verifies the decoded landing, and
-counts frames forward to the target. The index carries every frame's actual
-timestamp, so no frame-index-to-time conversion exists to get wrong.
-
-For comparison, the OpenCV seeking this replaces converts the frame index to a
-timestamp through one average frame rate (`CAP_PROP_POS_FRAMES`). Measured
-against pixel-content ground truth with opencv-python 5.0.0: on constant-rate
-files that conversion is sound -- every control seek landed exactly, so
-constant-rate datasets were not being misread. On variable-rate files it is
-wrong wherever the local rate differs from the average -- on a fixture with a
-10 fps stretch inside a 30 fps recording, 12 of 14 seeks landed off by -35 to
-+25 frames (upstream reports of this class span 2015-2025: opencv/opencv
-issues 4890, 9053, 20227, 26827). Variable rate matters for this corpus
-because recordings drop frames when the machine gets busy.
-`tests/io/test_reader_vfr.py` pins the reader's frame-exact landing on that
-variable-rate shape.
-
-An earlier version of the reader piped frames from an ffmpeg subprocess (the
-architecture moviepy and imageio-ffmpeg use); the measurements behind the move
-to in-process decode are recorded in
-`docs/specs/2026-07-16-extraction-and-reader-design.md`.
-
-
-## The OpenCV decode problem
-
-`opencv-python` wheels bundle their own ffmpeg build: not under this project's
-control, not independently upgradable, with a codec table that varies by wheel
-version and platform. A distro OpenCV linked against a capable system ffmpeg
-can decode AV1; the pip wheel this stack installs cannot -- probing the 4.13
-and 5.0.0 wheels shows no AV1 software decoder (no dav1d, no libaom) and no
-hardware decode path (no CUDA, no NVCUVID, no VA-API), so an AV1 file opens
-and decodes zero frames, GPU or not. To check any specific wheel:
-
-```bash
-python -c "import cv2; print(cv2.getBuildInformation())" | grep -i -A5 "Video I/O"
-```
-
-The transcode codec is currently AV1 (see "Why AV1 and not H.264"; the choice
-is still open to discussion), and the wheel cannot decode it, so a file
-transcoded for analysis could not be read back by a toolkit that decodes
-through OpenCV -- which is why `mosaic` decodes through this package's reader,
-not OpenCV. Owning the decode stack is a prerequisite of any modern codec, AV1
-or a successor. Choosing AV1 did not create the problem -- the
-wheel decodes H.264 and H.265 only because those decoders are built into
-libavcodec, while AV1's (dav1d, libaom) are external libraries the wheel
-omits; AV1 is simply the first codec this stack uses that exposes the
-ownership defect.
-
-### Narrower than "remove OpenCV"
-
-Splitting `mosaic`'s OpenCV surface by whether a codec is involved:
-
-- Codec-bound: `cv2.VideoCapture` and the `CAP_PROP_*` properties -- decode,
-  seek, metadata. This is what the reader and the probe replace.
-- Codec-free: `cv2.resize`, `cv2.cvtColor`, `cv2.imwrite`, and the rest of the
-  image operations. These stay. OpenCV remains a `mosaic` dependency for
-  overlays, identity models, and pose training converters; it stops being the
-  decoder.
-
-The one structure ffmpeg cannot read is the imgstore index layer (the
-`__store` descriptor, per-chunk `.npz` indexes, the frame-to-chunk mapping).
-That layer is plain Python and numpy and stays in `mosaic`. The chunks
-themselves are mp4, which the reader decodes fine.
+A `VideoReader` is not thread-safe: it holds an open decoder with position
+state. Use one per thread.
 
 
 ## Transcode semantics
 
-Two targets, one codec -- currently AV1, see below -- differing in rate
-control and in whether they run at all. The original upload is preserved in
+Two targets, one codec, differing in rate control, in whether audio is kept, and
+in whether they run at all. The analysis derivative carries no audio track and
+no keyframe-interval cap; the playback derivative keeps audio and caps the
+interval so scrubbing does not decode long runs. The original is preserved in
 every case; derivatives are separate artifacts.
 
-| Target | Trigger | Opt-out |
+| Target | Trigger | `stream_transcode` |
 | --- | --- | --- |
-| Analysis | Any analysis reason: variable frame rate, unreliable timing metadata, rotation, non-square pixels, interlacing. | None -- required for valid per-frame results. |
-| Playback | A hard stream reason: the file cannot play in the browser at all. | None. |
-| Playback | A soft stream reason: the file plays, but not well or not everywhere. | Opt-out; presented as a suggestion. |
+| Analysis | Any analysis reason: variable frame rate, unreliable timing metadata, rotation, non-square pixels, interlacing. | not applicable |
+| Playback | A hard stream reason: the browser's rendering would disagree with the coordinate or time model -- unsupported container or codec, variable frame rate, rotation, non-square pixels, non-zero start time. | `required` |
+| Playback | A soft stream reason: it plays correctly, but not well or not everywhere. | `recommended` |
 
-The verdict selects the minimum operation, not a blanket re-encode: a header
-that lies about timing gets a `-c copy` remux with a corrected timebase, a
-tail `moov` gets `-movflags +faststart`, a supported stream in an unopenable
-container gets a rewrap, and only a defect in the pixel grid or the frame
-clock gets a real AV1 re-encode. Encoding runs on SVT-AV1 (CPU), or NVENC AV1
-when the caller permits hardware and `mosaic_media.hwaccel` verifies a usable
-device -- an encoder listing proves it was compiled in, not that it works.
+Which containers and codecs count as supported is the caller's
+`PlaybackProfile`, not a constant here. `Verdict.stream_transcode` is
+`Literal["required", "recommended"] | None` and `HARD_STREAM_REASONS` is the set
+that makes it `required`; `Verdict.analysis_transcode` is
+`Literal["required"] | None`, because a defect that invalidates per-frame
+results has no advisory tier.
 
-Variable frame rate is the hard measurement. ffprobe and OpenCV both produce
-false positives on containers that merely quantize timestamps to milliseconds,
-so the probe fits a uniform grid across all frame timestamps and measures the
-worst deviation in frame periods -- over the whole file, because a bounded
-window misclassified a large share of the ingestion corpus this was developed
-against (recordings drop frames when the machine gets busy, not at the start).
+The verdict selects the minimum operation rather than a blanket re-encode. A
+header that lies about timing gets a `-c copy` remux with corrected timestamps,
+a tail `moov` gets `-movflags +faststart`, a supported stream in an unopenable
+container gets a rewrap, and only a defect in the pixel grid or the frame clock
+gets a re-encode. Encoding runs on SVT-AV1, or on NVENC when the caller permits
+hardware and ffmpeg lists `av1_nvenc`. A listing proves the encoder was compiled
+in, not that a usable device is present, so permitting hardware on a machine
+without one fails at encoder startup rather than falling back.
 
-The transcoded output is re-probed as its acceptance test (a variable-rate
-source resampled to constant rate can still carry residual drift), and that
-probe also mints the derivative's authoritative `MediaFacts`. A red verdict on
-the output is terminal: the converter raises, the job is marked failed for a
-human to see, and nothing retries -- the same deterministic command on the
-same input would reproduce the same red output. Retries are reserved for
-transient faults such as a killed subprocess or a full disk.
+Variable frame rate is the hard measurement. ffprobe and OpenCV both report it
+for containers that merely quantize timestamps to milliseconds, so the probe
+instead fits a uniform grid across all frame timestamps and measures the worst
+deviation in frame periods, against the drift limit in `Thresholds`. The fit
+covers the whole file: a bounded window misclassifies recordings that drop
+frames partway through rather than at the start.
+
+The transcoded output is re-probed as its acceptance test, since a variable-rate
+source resampled to a constant rate can still carry residual drift, and that
+probe mints the derivative's authoritative `MediaFacts`. If the output's own
+verdict is not clean the converter raises rather than retrying: the input is
+unchanged and the command is unchanged, so a second attempt has nothing new to
+work with.
 
 A transcode changes the pixels and therefore every measured fact, so the
-derivative's identity shares nothing with its source's and no hash can recover
-the link. `TranscodeResult` carries `source_video_uuid` for that reason -- the
-source's `video_uuid`, recorded on the result (on the no-op branch too, since it
-describes the input either way). It is the move-resilient form of a
-source-to-derivative edge a consumer may also track by path; a caller that wants
-it persisted stores it alongside the derivative's own facts.
-
-### Why AV1 and not H.264
-
-AV1 is the current choice, not a settled constant -- the discussion stays
-open. Encoder selection lives in two places, the transcode layer and the
-in-process writer, and playback support is injected profile policy, so
-revisiting the choice would touch those two and not ripple through consumers.
-One constraint is fixed rather than open: whatever the codec, it cannot be one
-whose only encoders are GPL, because PyAV links FFmpeg into the caller. The
-case for AV1 today: the derivatives are a permanent second copy of every
-defective upload, which makes the codec choice a storage decision first.
-
-- Lower bitrate than H.264 at equal perceptual quality: published encoder
-  comparisons typically report 30-50% BD-rate savings, varying by encoder,
-  preset, and content (not measured on this corpus). Equivalently, at a fixed
-  storage budget the derivative carries fewer quantization artifacts into the
-  tracker.
-- Royalty-free (AOMedia). H.265's patent pools rule it out on their own;
-  H.264's pool is manageable but nonzero for a platform distributing encoded
-  content.
-- Archive runway: re-encoding a corpus later is expensive, H.264 encoders are
-  at the end of their improvement curve, and AV1 encoders keep improving
-  against a fixed bitstream specification.
-- Playback coverage matches the shipped profile: current Chrome, Firefox, and
-  Edge ship software AV1 decode; Safari plays AV1 only with hardware decode
-  (M3 and A17 or later). The default profile is Chrome; if Safari becomes a
-  target, the playback codec is profile policy, not a constant.
-
-H.264 would buy faster encodes, cheaper decode, and universal playback -- at
-roughly twice the storage, forever. Originals are preserved and the toolkit
-decodes through libav, so universality is already covered structurally.
-
-
-## CLI composition
-
-`mosaic` composes typer sub-applications; mounting this package's app is the
-same pattern:
-
-```python
-app.add_typer(media_app, name="media")
-```
-
-```bash
-mosaic media probe video.mp4
-mosaic media transcode video.mp4 --target playback --output media/
-mosaic media compare left.mp4 right.mp4
-```
-
-`--output` takes a file path or an existing directory (the filename then
-derives from the source stem, always `.mp4`). The converter refuses to write
-over the source and refuses a file destination that does not end in `.mp4`;
-re-running the same transcode replaces its output atomically. The package
-knows no dataset layout -- a convention like `media_raw/` for originals and
-`media/` for derivatives belongs to the caller, like every other policy.
-
-`compare` probes both files and prints the `DuplicateComparison` as JSON, for
-ad-hoc use; the ingestion pathway compares stored facts and never re-probes. Its
-verdict is also the exit code, so it works as a shell test without parsing
-stdout:
-
-| Code | Meaning |
-| --- | --- |
-| 0 | duplicate |
-| 1 | a probe failed on either file |
-| 3 | distinct |
-| 4 | different timing |
-| 5 | timing unknown |
-
-Exit 2 is left to the CLI framework's usage error, so a mistyped option is never
-mistaken for a verdict. `--fps-tolerance` and `--duration-tolerance` override
-the derived defaults; the left file is the reference the tolerances are computed
-from.
-
-Job infrastructure calls the Python API (`run_transcode`) rather than the CLI:
-structured exceptions, no argv escaping, no output parsing. The CLI exists for
-humans and standalone use; both entry points are the same one-way edge.
-
-Division of responsibility: policy (which criteria a file must satisfy, which
-profile applies) is constructed by the caller and injected; execution (ffmpeg
-invocation, encoder selection) lives here; scheduling (queueing, cancellation,
-subprocess lifecycle) stays in `mosaic`'s job infrastructure, which calls in.
-What crosses the boundary is a command specification, never a policy.
-
-
-## Metadata authority
-
-The probe runs once, at ingestion, and its `MediaFacts` travel forward as the
-authoritative metadata; consumers inject them instead of re-measuring. A file
-that is already analysis-clean is never re-encoded, so downstream code cannot
-assume canonically written bytes -- re-probing with OpenCV would reintroduce
-the false-positive variable-rate detection and unreliable frame counts this
-package exists to avoid.
+derivative's identity shares nothing with its source's and no hash recovers the
+link. `TranscodeResult` carries `source_video_uuid` for that reason -- the
+source's `video_uuid`, recorded on the result, including on the no-op branch
+where it describes the input either way.
 
 
 ## Video identity
 
 The probe derives two values per file, both `MediaFacts` fields, so they travel
-with the rest of the metadata and are minted once at ingestion. They answer
-different questions and are not interchangeable.
+with the rest of the metadata and are minted once. They answer different
+questions and are not interchangeable.
 
 | | `video_uuid` | `content_digest` |
 | --- | --- | --- |
@@ -347,11 +255,12 @@ different questions and are not interchangeable.
 | Use for | naming, hash chains, derived paths, cache keys | duplicate candidate lookup |
 | Never use for | duplicate detection | naming, or anything a chain consumes |
 
-Both are built from a per-packet payload hash the packet scan now reads through
+Both are built from a per-packet payload hash the packet scan reads through
 ffprobe's `-show_data_hash`, not from a decoded frame and not from a file
 checksum. `content_digest` hashes the codec-level facts and every packet's size,
 keyframe flag, and payload hash; `video_uuid` folds the packet timestamps on top
-and is emitted as an RFC 9562 UUIDv8.
+and is emitted as an RFC 9562 UUIDv8. The payload hash is CRC32, which guards
+against accidental collision, not against a crafted one.
 
 `video_uuid` is the only value safe to compare for identity or to name anything.
 Because it hashes the timestamps, **a container change moves it, and a directory
@@ -363,51 +272,117 @@ quantization rather than undoing it.
 `content_digest` survives those container rewrites, but only where they preserve
 the elementary stream. It is not invariant across a bitstream reframing: an mp4
 to MPEG-TS repack applies Annex B conversion, which changes the coded bytes
-themselves, so the digest changes with them. Canonicalizing that away would need
-a per-codec bitstream parser, which the standard-library core cannot host.
+themselves, so the digest changes with them.
 
 To find duplicates, group by `content_digest` and call `compare_for_duplicate`
-on the members of a group. It compares the timing floats with a duration-scaled
-tolerance and returns one of five verdicts -- duplicate, different timing,
-timing unknown, unminted, or distinct. Consumers do not reimplement that
-comparison; a tolerance test written downstream is a tolerance test written
-wrongly, which is why it is exported.
+on the members of a group. It compares the timing with a duration-scaled
+tolerance -- a longer file is allowed proportionally more absolute drift -- and
+returns one of five verdicts: duplicate, different timing, timing unknown,
+unminted, or distinct. It is exported so the tolerance rule has one
+implementation rather than one per caller.
 
-The payload read is the cost: the scan now reads every packet's payload rather
-than only its header, measured at roughly 1.5x to 2x the previous scan on a
-large file (provisional, pending measurement on a real corpus). It is paid once,
-at the ingestion probe. `-show_data_hash` needs no newer ffprobe than the
-package already requires -- it shipped in FFmpeg 2.4, well below the 5.1 runtime
-floor.
+Reading a packet's payload is what this costs: the scan reads every packet's
+bytes rather than only its header, once, at the probe.
 
-Every probe also records `identity_scheme` and `prober_version` on `MediaFacts`:
-the declared scheme version that minted `video_uuid` and `content_digest`, and
-the ffprobe build whose demuxer output the digest is defined against. Neither
-is hashed -- they are provenance, not content -- and they are what lets a
-consumer tell a re-mint under a later scheme apart from a file whose content
-actually changed. See "Versioning" for how `identity_scheme` relates to the
-package's own release number.
+`identity_scheme` and `prober_version` are recorded on every probe -- the scheme
+version that minted the two values, and the ffprobe build whose demuxer output
+the digest is defined against. Neither is hashed.
 
-The two format tags are internal constants and are deliberately not exported. A
-consumer reading a format tag is reimplementing the digest; `IDENTITY_SCHEME` is
-the opposite case, a recorded fact a consumer compares against a stored one.
+The digest folds in each packet's payload hash as libavformat hands it over, so
+an ffmpeg upgrade is the one event outside your control that could re-mint
+stored values. Measured, it does not: both values are byte-identical across
+FFmpeg 6.1, 7.1, and 8.1 for every committed fixture, including raw elementary
+streams. `tests/probe/test_identity_across_ffmpeg_builds.py` re-checks it
+whenever alternate builds are configured, and `prober_version` is what makes a
+future re-mint detectable rather than silent.
+
+
+## Versioning
+
+Semantic versioning, with the pre-1.0 convention that a minor bump is a breaking
+change and a patch bump is compatible. Pin a range
+(`mosaic-media>=0.2.0,<0.3.0`); a bare floor would not exclude the next breaking
+release. Release notes are on the repository's releases page.
+
+`IDENTITY_SCHEME` is a second, independent number. It moves only when the bytes
+hashed into `video_uuid` or `content_digest` change, and a move re-mints every
+stored value. The two are coupled in one direction only: **a scheme bump always
+forces a breaking version bump, and a version bump never implies a scheme
+bump.** A pinned range therefore protects stored identity values.
+
+
+## Command line
+
+The `[cli]` extra installs a typer application, usable standalone or mounted as
+a sub-application:
+
+```python
+import typer
+from mosaic_media.cli import app as media_app
+
+app = typer.Typer()
+app.add_typer(media_app, name="media")
+```
+
+```bash
+mosaic-media probe video.mp4
+mosaic-media transcode video.mp4 --target playback --output media/
+mosaic-media compare left.mp4 right.mp4
+```
+
+`--output` takes a file path or an existing directory, in which case the
+filename derives from the source stem and is always `.mp4`. The converter
+refuses to overwrite the source and refuses a file destination not ending in
+`.mp4`; re-running the same transcode replaces its output atomically. The
+package knows no dataset layout; where originals and derivatives live is the
+caller's decision.
+
+`compare` prints the `DuplicateComparison` as JSON, and its verdict is also the
+exit code, so it works as a shell test without parsing stdout:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | duplicate |
+| 1 | a probe failed on either file |
+| 3 | distinct |
+| 4 | different timing |
+| 5 | timing unknown |
+| 6 | unminted (neither file carries identity values) |
+
+Exit 2 is left to the CLI framework's usage error, so a mistyped option is never
+mistaken for a verdict. `--fps-tolerance` and `--duration-tolerance` override
+the derived defaults; the left file is the reference the tolerances are computed
+from.
+
+For programmatic use prefer the Python API: structured exceptions, no argv
+escaping, no output parsing.
+
+
+## Errors
+
+Two exception types, both `RuntimeError` subclasses.
+
+`MediaProbeError` comes from the probe: no video stream, a missing file, or
+ffprobe failing or returning output that cannot be parsed.
+
+`TranscodeError` comes from the converter: ffmpeg failing, the run exceeding its
+timeout, a cancel callback asking it to stop, a destination that is refused, or
+the output failing its acceptance probe.
 
 
 ## License
 
 Apache License 2.0 -- see [LICENSE](LICENSE).
 
-The package shells out to the system `ffmpeg`/`ffprobe` binaries and, for the
-`[io]` extra, uses PyAV. Those components are not distributed with this package
-and carry their own licenses (FFmpeg is LGPL-2.1-or-later, or GPL if built with
-GPL-only components; PyAV is BSD-3-Clause); redistributors who bundle them must
-observe those licenses independently.
+The package shells out to the system `ffmpeg` and `ffprobe` binaries and, for
+the `[io]` extra, uses `av`. Those components are not distributed with this
+package and carry their own licenses: FFmpeg is LGPL-2.1-or-later, or GPL if
+built with GPL-only components, and `av` is BSD-3-Clause.
 
-A subprocess call to `ffmpeg` is unaffected by that binary's license, but PyAV
-links FFmpeg into the calling process, so reaching a GPL-only encoder that way
--- `libx264` and `libx265`, the only software H.264 and HEVC encoders FFmpeg
-has -- would extend the GPL to consumers of this package. Nothing here names
-one: the writer encodes AV1 through `libsvtav1`, decoding is unaffected because
-FFmpeg's H.264 and HEVC decoders are native and LGPL, and the few test clips
-that must genuinely be H.264 are committed under `tests/assets/` rather than
-encoded, so the suite runs against the same LGPL FFmpeg a deployment can ship.
+Nothing in the distributed package names a GPL-only encoder. `av` links FFmpeg
+into the calling process, so an encoder named here would become a dependency of
+this package; the default `av` wheel also carries its own FFmpeg build, whose
+codec set is chosen by whoever built the wheel rather than by this package.
+
+Redistributors bundling any of these are combining separately licensed works and
+should establish their own obligations rather than relying on this summary.
