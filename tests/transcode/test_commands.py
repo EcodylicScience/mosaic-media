@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 
@@ -25,6 +26,33 @@ from tests.probe.test_verdict import CLEAN
 
 SOURCE = Path("/tmp/in.mkv")
 DESTINATION = Path("/tmp/out.mp4")
+
+
+class TimestampLessOverrides(TypedDict):
+    """The exact keys TIMESTAMP_LESS carries.
+
+    Typed rather than `dict[str, object]` so that unpacking it into
+    `command_for` stays checkable: against an open key type the checker cannot
+    rule out that the unpack supplies `allow_hardware`, and the call fails on
+    `object` not being assignable to `bool`.
+    """
+
+    timing_measured: bool
+    fps: float
+    duration: float
+    constant_frame_rate: bool
+
+
+# A source whose packets carry no timestamps. The measured values are cleared
+# alongside the flag because probe_media sets them to placeholders whenever
+# timing is unmeasured; facts mixing timing_measured=False with measured values
+# model a state the probe never mints.
+TIMESTAMP_LESS: TimestampLessOverrides = {
+    "timing_measured": False,
+    "fps": 0.0,
+    "duration": 0.0,
+    "constant_frame_rate": False,
+}
 
 
 def command_for(
@@ -72,6 +100,67 @@ def test_a_lying_header_is_a_copy_remux_with_regenerated_timestamps() -> None:
     assert arg_after(command.argv, "-fflags") == "+genpts"
     assert "libsvtav1" not in command.argv
     assert command.argv[-1] == str(DESTINATION)
+
+
+def test_timestamp_less_source_sets_timestamps_on_the_analysis_remux() -> None:
+    command = command_for(
+        "analysis", ANALYSIS_ENCODING, **TIMESTAMP_LESS, declared_fps=30.0
+    )
+    assert command is not None
+    assert command.operation is Operation.REMUX_TIMEBASE
+    assert arg_after(command.argv, "-bsf:v") == "setts=ts=N/30.000000/TB"
+    # setts supplies the timestamps, so nothing is left for genpts to generate.
+    assert "+genpts" not in command.argv
+
+
+def test_timestamp_less_source_sets_timestamps_on_the_playback_rewrap() -> None:
+    command = command_for(
+        "playback",
+        PLAYBACK_ENCODING,
+        **TIMESTAMP_LESS,
+        declared_fps=30.0,
+        container="avi",
+    )
+    assert command is not None
+    assert command.operation is Operation.REMUX_CONTAINER
+    assert arg_after(command.argv, "-bsf:v") == "setts=ts=N/30.000000/TB"
+
+
+def test_fractional_rate_renders_at_six_decimals() -> None:
+    command = command_for(
+        "analysis", ANALYSIS_ENCODING, **TIMESTAMP_LESS, declared_fps=30000 / 1001
+    )
+    assert command is not None
+    assert arg_after(command.argv, "-bsf:v") == "setts=ts=N/29.970030/TB"
+
+
+def test_timestamp_less_source_without_a_rate_keeps_the_generated_timestamps() -> None:
+    command = command_for(
+        "analysis", ANALYSIS_ENCODING, **TIMESTAMP_LESS, declared_fps=0.0
+    )
+    assert command is not None
+    assert "-bsf:v" not in command.argv
+    assert "+genpts" in command.argv
+
+
+def test_lying_header_source_never_sets_timestamps() -> None:
+    # A lying header selects REMUX_TIMEBASE too, and there declared_fps is the
+    # very rate the remux exists to correct. Writing it into the timestamps
+    # would make the lie the file's truth.
+    command = command_for(
+        "analysis", ANALYSIS_ENCODING, declared_fps=1000.0, declared_frame_count=0
+    )
+    assert command is not None
+    assert command.operation is Operation.REMUX_TIMEBASE
+    assert "-bsf:v" not in command.argv
+    assert "+genpts" in command.argv
+
+
+def test_measured_timing_playback_rewrap_never_sets_timestamps() -> None:
+    command = command_for("playback", PLAYBACK_ENCODING, container="avi")
+    assert command is not None
+    assert command.operation is Operation.REMUX_CONTAINER
+    assert "-bsf:v" not in command.argv
 
 
 def test_a_tail_moov_is_a_faststart_remux() -> None:

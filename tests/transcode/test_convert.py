@@ -17,9 +17,11 @@ from mosaic_media.transcode import (
     EncodingParameters,
     Operation,
     Target,
+    TranscodeCommand,
     TranscodeError,
     TranscodeProgress,
     TranscodeResult,
+    build_command,
     run_transcode,
 )
 from mosaic_media.transcode import convert as convert_module
@@ -74,6 +76,108 @@ def transcode(
         thresholds=DEFAULT_THRESHOLDS,
         encoding=encoding,
     )
+
+
+def _declared_average_rate(path: Path) -> str:
+    """The output's `avg_frame_rate` as ffprobe reports it, exactly."""
+    argv = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=avg_frame_rate",
+        "-of",
+        "csv=p=0",
+        str(path),
+    ]
+    completed = subprocess.run(argv, capture_output=True, text=True, check=True)
+    return completed.stdout.strip()
+
+
+def _warnings_of(argv: tuple[str, ...]) -> str:
+    """Run a built command at warning level and return what ffmpeg wrote.
+
+    The built argv opens with the runner's own `-v error`, which hides the
+    muxer's deprecation notice, so the level is replaced rather than prepended:
+    ffmpeg takes the last occurrence, and a prepended flag would be overridden
+    by the one already there. Replacing in place rather than rebuilding the
+    leading flags keeps this independent of how many of them there are, and
+    raises rather than misbehaving if `-v` ever stops being passed.
+    """
+    replaced = list(argv)
+    replaced[replaced.index("-v") + 1] = "warning"
+    completed = subprocess.run(replaced, capture_output=True, text=True, check=True)
+    return completed.stderr
+
+
+def _analysis_command(source: Path, destination: Path) -> TranscodeCommand:
+    facts = probe_media(source)
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    command = build_command(
+        verdict, facts, "analysis", source, destination, encoding=ANALYSIS_ENCODING
+    )
+    assert command is not None
+    return command
+
+
+def test_raw_remux_declares_the_source_rate_exactly(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # Before the declared rate reached the command, the mp4 muxer synthesized
+    # its own and landed on 1000000/33333, which is 30.0003 rather than 30.
+    result = transcode(
+        clips["raw_h264"], tmp_path / "out.mp4", "analysis", ANALYSIS_ENCODING
+    )
+    assert result.performed
+    assert result.output_path is not None
+    assert _declared_average_rate(result.output_path) == "30/1"
+
+
+def test_raw_playback_rewrap_declares_the_source_rate_exactly(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # A raw stream fires unsupported_container for playback, which selects
+    # REMUX_CONTAINER rather than REMUX_TIMEBASE. That argv carried no timestamp
+    # source at all, so its output declared an invented rate too.
+    result = transcode(
+        clips["raw_h264"], tmp_path / "out.mp4", "playback", PLAYBACK_ENCODING
+    )
+    assert result.performed
+    assert result.operation is Operation.REMUX_CONTAINER
+    assert result.output_path is not None
+    assert _declared_average_rate(result.output_path) == "30/1"
+
+
+def test_fractional_raw_remux_survives_the_float_round_trip(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    source = clips["raw_fractional_rate_h264"]
+    assert probe_media(source).declared_fps == 30000 / 1001
+    result = transcode(source, tmp_path / "out.mp4", "analysis", ANALYSIS_ENCODING)
+    assert result.performed
+    assert result.output_path is not None
+    assert _declared_average_rate(result.output_path) == "30000/1001"
+
+
+def test_raw_remux_leaves_no_unset_timestamps(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    command = _analysis_command(clips["raw_h264"], tmp_path / "out.mp4")
+    assert "Timestamps are unset" not in _warnings_of(command.argv)
+
+
+def test_the_unset_timestamp_check_can_fail(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # Guard on the test above: strip the timestamp filter and the muxer's
+    # deprecation notice must reappear, or that assertion proves nothing.
+    command = _analysis_command(clips["raw_h264"], tmp_path / "out.mp4")
+    assert "-bsf:v" in command.argv
+    index = command.argv.index("-bsf:v")
+    without = command.argv[:index] + command.argv[index + 2 :]
+    assert "Timestamps are unset" in _warnings_of(without)
 
 
 @requires_svtav1
@@ -507,13 +611,14 @@ def test_transcode_progress_is_indeterminate_for_a_timestampless_source(
     clips: dict[str, Path], tmp_path: Path
 ) -> None:
     # A raw elementary stream carries no timestamps, so it probes a duration of
-    # 0.0 and no completion fraction is knowable. The run still reports: updates
-    # arrive for a caller to drive an indeterminate display, and not one of them
-    # invents a fraction from the unknown duration. Which raw readings accompany
-    # them is not asserted, because it is a property of the ffmpeg build rather
-    # than of this package: ffmpeg reports as N/A every reading it cannot
-    # compute, and a copy remux of packets that reach the muxer without
-    # timestamps is the case where it computes none of them. The determinate
+    # 0.0 and no completion fraction is knowable: the fraction is computed
+    # against the source duration, and an unmeasurable one leaves nothing to
+    # divide by. The remux does set the output's timestamps, which is why the
+    # absent fraction is attributable to the source duration alone. The run
+    # still reports: updates arrive for a caller to drive an indeterminate
+    # display, and not one of them invents a fraction from the unknown duration.
+    # Which raw readings accompany them is not asserted, because it is a
+    # property of the ffmpeg build rather than of this package. The determinate
     # half of the contract -- a known duration does yield a fraction, driven by
     # the out_time reading -- is pinned by the monotonic-fraction test above.
     source = clips["raw_h264"]

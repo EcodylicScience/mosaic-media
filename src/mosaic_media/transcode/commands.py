@@ -155,8 +155,34 @@ def _select_operation(verdict: Verdict, target: Target) -> Operation | None:
 
 
 def _copy_remux_argv(
-    source: Path, destination: Path, *, input_flags: tuple[str, ...] = ()
+    source: Path,
+    destination: Path,
+    *,
+    input_flags: tuple[str, ...] = (),
+    timestamp_fps: float = 0.0,
 ) -> tuple[str, ...]:
+    # A source whose packets carry no timestamps leaves the mp4 muxer to
+    # synthesize them, which it warns is deprecated and which lands on an
+    # approximation of the rate rather than the rate itself. setts computes each
+    # timestamp from the frame index at the rate the stream declares, so the
+    # packets arrive timestamped and the fallback is never entered.
+    #
+    # A stream whose sequence parameter set carries no timing states no rate, so
+    # there is nothing to set and the fallback still runs for it. That case
+    # loses its timestamps outright when the fallback is removed, which is a
+    # visible failure rather than a silently invented rate.
+    #
+    # The timestamp is computed from the packet index, which is decode order.
+    # That is presentation order only for a bitstream coded without frame
+    # reordering. A raw stream carrying B-frames therefore receives presentation
+    # times shuffled against its pictures, and the acceptance re-probe cannot
+    # detect it: the values are uniform, complete, and start at zero, so the
+    # output measures as constant-rate and correct while only their assignment
+    # to pictures is wrong. Correcting that means re-encoding such a source
+    # rather than copying it.
+    timestamp_args: tuple[str, ...] = ()
+    if timestamp_fps > 0.0:
+        timestamp_args = ("-bsf:v", f"setts=ts=N/{timestamp_fps:.6f}/TB")
     return (
         *_BASE,
         *input_flags,
@@ -164,6 +190,7 @@ def _copy_remux_argv(
         str(source),
         "-c",
         "copy",
+        *timestamp_args,
         "-movflags",
         "+faststart",
         str(destination),
@@ -220,9 +247,9 @@ def _reencode_argv(
     # Constant frame rate at the measured average resamples a variable source.
     # Rotation is baked by ffmpeg's default autorotation on re-encode, which also
     # clears the display-matrix side data; no explicit transpose is needed. An
-    # unmeasured rate (a raw elementary stream) falls back to the header's
-    # declared rate; with neither, the resample is omitted and the muxer keeps
-    # the input timing.
+    # unmeasured rate (a raw elementary stream) falls back to declared_fps, which
+    # for such a source is the rate its bitstream states; with neither, the
+    # resample is omitted and the muxer keeps the input timing.
     fps_value = facts.fps if facts.fps > 0.0 else facts.declared_fps
     if fps_value > 0.0:
         argv.extend(["-r", f"{fps_value:.6f}", "-fps_mode", "cfr"])
@@ -253,16 +280,29 @@ def build_command(
     operation = _select_operation(verdict, target)
     if operation is None:
         return None
+    # Only a source whose timing was never measured may have its timestamps
+    # written from declared_fps. On a measured file that field can be the header
+    # lie the remux exists to correct, and writing it in would make the lie the
+    # file's truth.
+    timestamp_fps = 0.0 if facts.timing_measured else facts.declared_fps
     if operation is Operation.REENCODE_AV1:
         argv = _reencode_argv(
             source, destination, facts, encoding, allow_hardware=allow_hardware
         )
     elif operation is Operation.REMUX_TIMEBASE:
-        argv = _copy_remux_argv(source, destination, input_flags=("-fflags", "+genpts"))
+        argv = _copy_remux_argv(
+            source,
+            destination,
+            input_flags=() if timestamp_fps > 0.0 else ("-fflags", "+genpts"),
+            timestamp_fps=timestamp_fps,
+        )
     else:
         # REMUX_FASTSTART and REMUX_CONTAINER share the copy-remux argv; the
-        # operation kind records which reason selected it.
-        argv = _copy_remux_argv(source, destination)
+        # operation kind records which reason selected it. REMUX_FASTSTART is
+        # unreachable for a timestamp-less source: moov_at_start returns None
+        # for a stream whose first box is not ftyp, and the reason fires only on
+        # False. That, not any assumption that a container implies timestamps.
+        argv = _copy_remux_argv(source, destination, timestamp_fps=timestamp_fps)
     return TranscodeCommand(
         argv=argv,
         operation=operation,
