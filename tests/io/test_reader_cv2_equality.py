@@ -40,6 +40,34 @@ def _cv2_all_frames(path: Path) -> list[numpy.ndarray]:
     return frames
 
 
+def _cv2_frame_count(path: Path) -> float:
+    import cv2
+
+    capture = cv2.VideoCapture(str(path))
+    try:
+        return float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    finally:
+        capture.release()
+
+
+def test_opencv_decodes_no_av1_frame_and_says_nothing(corpus_gop12: Path) -> None:
+    """The premise this module and the performance gate both rest on.
+
+    OpenCV opens an AV1 file, reports a frame count, and then decodes nothing.
+    Neither failure raises, so a caller trusting either signal reads an empty
+    file as a valid one -- a length check on it passes.
+
+    This goes red the moment a released wheel can decode AV1. That is the
+    signal, not a breakage: the H.264 clip these comparisons use and the
+    performance gate's H.264 corpus exist only because of this, and both can be
+    retired when it stops being true.
+    """
+    pytest.importorskip("cv2")
+
+    assert _cv2_frame_count(corpus_gop12) > 0
+    assert _cv2_all_frames(corpus_gop12) == []
+
+
 def _max_channel_difference(a: numpy.ndarray, b: numpy.ndarray) -> int:
     return int(numpy.abs(a.astype(numpy.int16) - b.astype(numpy.int16)).max())
 
