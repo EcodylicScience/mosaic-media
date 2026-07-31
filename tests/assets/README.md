@@ -2,13 +2,16 @@
 
 H.264 clips the suite needs but can no longer generate.
 
-FFmpeg has no native H.264 encoder: `libx264` and `libx264rgb` are external and
-GPL-2.0-or-later, and every other H.264 encoder is a hardware wrapper
-(`h264_nvenc`, `h264_qsv`, `h264_v4l2m2m`, `h264_vaapi`). The suite must run
-against the same LGPL FFmpeg the consumers deploy, so it has no way to produce
-H.264 on a machine without a GPU. Decoding is unaffected -- FFmpeg's H.264 and
-HEVC decoders are native and LGPL -- so these files are consumed with no extra
-dependency.
+FFmpeg's software H.264 encoders are `libx264` and `libx264rgb`, which are
+external and GPL-2.0-or-later, and `libopenh264`, which is external and not
+GPL; every other H.264 encoder is a hardware wrapper (`h264_nvenc`, `h264_qsv`,
+`h264_v4l2m2m`, `h264_vaapi`). The suite must run against the same LGPL FFmpeg
+the consumers deploy, which rules out the GPL two, and the Ubuntu system FFmpeg
+it runs against on development machines is built without `libopenh264`. No
+software H.264 encoder is available on both, so a machine without a suitable GPU
+has no way to produce these clips, and they are committed instead. Decoding is
+unaffected -- FFmpeg's H.264 and HEVC decoders are native and LGPL -- so these
+files are consumed with no extra dependency.
 
 Everything else the fixtures need is still generated at test time: `libvpx`,
 `mjpeg`, `aac`, and `libsvtav1` are all non-GPL, and the `-c copy` remuxes
@@ -42,6 +45,13 @@ ffmpeg -v error -y -f lavfi -i "testsrc=size=320x240:rate=30:duration=2" \
 ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=30:duration=2" \
     -c:v libx264 -bf 0 -pix_fmt yuv420p -g 12 -f h264 $Q raw.h264
 
+# raw_fractional_rate.h264 -- 60 frames at 30000/1001, no container, no
+# timestamps. The fractional rate is what the integer-rate clips do not
+# exercise: it survives the float round trip only if the declared rate is
+# carried exactly.
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=30000/1001:duration=2" \
+    -c:v libx264 -bf 0 -pix_fmt yuv420p -g 12 -f h264 $Q raw_fractional_rate.h264
+
 # anamorphic.mp4 -- 50 frames with a 10:11 sample aspect ratio, coded 320x240.
 ffmpeg -v error -y $DEFAULT -c:v libx264 -pix_fmt yuv420p -vf setsar=10/11 $Q anamorphic.mp4
 
@@ -71,7 +81,7 @@ ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=30:duration=2.6" \
 
 ## Regenerating
 
-Regeneration needs an FFmpeg built with `--enable-gpl`, which the deployment
-image deliberately does not have. Any regeneration re-mints `video_uuid` and
-`content_digest` for these files, so the golden-digest expectations move with
-them: treat it as a corpus change, not a refresh.
+These recipes need an FFmpeg built with `--enable-gpl`, because they name a GPL
+encoder; the deployment image deliberately does not have it. Any regeneration
+re-mints `video_uuid` and `content_digest` for these files, so the golden-digest
+expectations move with them: treat it as a corpus change, not a refresh.

@@ -130,6 +130,11 @@ def test_genuinely_distinct_fixtures_have_distinct_uuids(
     # Excludes faststart_mp4, which is the same video as cfr_mp4 by
     # construction and is covered by the equality test above, and no_video,
     # which has no video stream to probe.
+    #
+    # raw_h264 and raw_fractional_rate_h264 are the strongest pair here: one
+    # command produced both, differing only in rate=, so they share encoder
+    # settings, GOP, geometry, and packet count. If content_digest ever stopped
+    # covering the bytes that differ, they are what would collide first.
     names = (
         "cfr_mp4",
         "cfr_30fps_mp4",
@@ -138,6 +143,7 @@ def test_genuinely_distinct_fixtures_have_distinct_uuids(
         "anamorphic_mp4",
         "audio_mp4",
         "raw_h264",
+        "raw_fractional_rate_h264",
     )
     minted = [probe_media(clips[name]).video_uuid for name in names]
     assert len(set(minted)) == len(names)

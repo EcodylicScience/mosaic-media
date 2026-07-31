@@ -4,11 +4,11 @@ ffmpeg is a documented system dependency, so a missing encoder is a failure,
 not a skip. The encoders used here are the ones an LGPL build carries: libvpx,
 mjpeg, aac, and the native `-c copy` remuxes.
 
-H.264 clips are copied from `tests/assets/` rather than encoded. FFmpeg has no
-native H.264 encoder -- libx264 is external and GPL-2.0-or-later -- and this
-suite must run against the same LGPL build the consumers deploy. Decoding is
-unaffected, so a committed clip costs nothing to consume. See
-`tests/assets/README.md` for provenance and `tests/test_encoder_guard.py` for
+H.264 clips are copied from `tests/assets/` rather than encoded: no H.264
+encoder is available on both the LGPL build the consumers deploy and the
+development machines the suite runs on. Decoding is unaffected, so a committed
+clip costs nothing to consume. See `tests/assets/README.md` for the encoder
+listing behind that and for provenance, and `tests/test_encoder_guard.py` for
 the rule.
 
 Copies land in the tmp root because tests remux and truncate from these clips;
@@ -36,6 +36,7 @@ AssetName = Literal[
     "h264_gop12.mp4",
     "long_gop.mp4",
     "raw.h264",
+    "raw_fractional_rate.h264",
 ]
 
 
@@ -111,6 +112,12 @@ def clips(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     # frames at a nominal 30 fps; -bf 0 keeps a later -c copy remux free of
     # B-frame reordering trouble, matching how tracking boxes record.
     made["raw_h264"] = asset("raw.h264", root / "raw.h264")
+    # The same, at 30000/1001. The fractional rate is what the integer-rate
+    # clips do not exercise: it survives the float round trip only if the
+    # declared rate is carried exactly.
+    made["raw_fractional_rate_h264"] = asset(
+        "raw_fractional_rate.h264", root / "raw_fractional_rate.h264"
+    )
     return made
 
 
