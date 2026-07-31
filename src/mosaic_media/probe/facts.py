@@ -8,8 +8,12 @@ class MediaFacts:
     """Measured properties of a single video file.
 
     `declared_*` are the header's claims, retained only to be compared against
-    measurement. `declared_fps` is `avg_frame_rate`, which is what OpenCV reads;
-    `r_frame_rate` is neither the average nor an upper bound and is not stored.
+    measurement. `declared_fps` is `avg_frame_rate`, which is what OpenCV reads,
+    for every stream whose packets carry timestamps. For one whose packets carry
+    none, `avg_frame_rate` is a demuxer default read from nothing in the file,
+    and `declared_fps` instead carries the rate the elementary stream states in
+    its own bitstream, or 0.0 when no bitstream rate is derived. `timing_measured`
+    is what tells the two apart.
 
     `timing_measured` is False for a stream whose packets carry no timestamps
     at all (a raw elementary stream such as a bare `.h264` file). Then `fps`

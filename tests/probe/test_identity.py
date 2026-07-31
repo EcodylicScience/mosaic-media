@@ -36,6 +36,7 @@ GOLDEN_HEADER = Header(
     start_time=0.0,
     declared_duration=2.0,
     declared_fps=25.0,
+    elementary_stream_fps=0.0,
     declared_frame_count=50,
 )
 

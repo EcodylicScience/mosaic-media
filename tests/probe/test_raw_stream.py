@@ -26,6 +26,25 @@ def test_raw_h264_probes_with_unmeasured_timing(clips: dict[str, Path]) -> None:
     assert facts.max_instantaneous_fps is None
 
 
+def test_raw_stream_declares_the_rate_its_bitstream_states(
+    clips: dict[str, Path],
+) -> None:
+    # raw.h264 is 30 fps content. The h264 demuxer's avg_frame_rate answers 25
+    # for every raw stream regardless of content, so 25 here means the demuxer
+    # default survived.
+    facts = probe_media(clips["raw_h264"])
+    assert facts.timing_measured is False
+    assert facts.declared_fps == 30.0
+
+
+def test_container_stream_still_declares_its_average_rate(
+    clips: dict[str, Path],
+) -> None:
+    facts = probe_media(clips["cfr_mp4"])
+    assert facts.timing_measured is True
+    assert facts.declared_fps == 25.0
+
+
 def test_raw_h264_analysis_verdict_selects_the_remux_not_a_reencode(
     clips: dict[str, Path],
 ) -> None:

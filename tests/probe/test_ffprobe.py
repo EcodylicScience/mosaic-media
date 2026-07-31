@@ -6,11 +6,19 @@ import pytest
 from mosaic_media.probe.errors import MediaProbeError
 from mosaic_media.probe.ffprobe import (
     PAYLOAD_HASH_ALGORITHM,
+    elementary_stream_fps,
+    parse_fraction,
     prober_version,
     read_header,
     scan_command,
     scan_packets,
 )
+
+
+def stream_payload(**overrides: str) -> dict[str, object]:
+    payload: dict[str, object] = {"r_frame_rate": "60/1"}
+    payload.update(overrides)
+    return payload
 
 
 def test_header_reads_container_codec_and_measured_geometry(
@@ -47,6 +55,80 @@ def test_header_detects_audio(clips: dict[str, Path]) -> None:
 
 def test_declared_fps_comes_from_avg_frame_rate(clips: dict[str, Path]) -> None:
     assert read_header(clips["cfr_mp4"]).declared_fps == pytest.approx(25.0)
+
+
+def test_parse_fraction_reads_an_absent_rate_as_zero() -> None:
+    # ffprobe writes "N/A" for a value it has no answer for, and partitioning it
+    # on "/" leaves "A" as the denominator.
+    assert parse_fraction("N/A") == 0.0
+
+
+def test_elementary_stream_fps_halves_the_h264_tick_rate() -> None:
+    assert elementary_stream_fps(stream_payload(), "h264", "h264") == 30.0
+
+
+def test_elementary_stream_fps_keeps_a_fractional_rate() -> None:
+    payload = stream_payload(r_frame_rate="60000/1001")
+    assert elementary_stream_fps(payload, "h264", "h264") == 30000 / 1001
+
+
+def test_elementary_stream_fps_keeps_a_sub_one_rate() -> None:
+    # A timelapse or long-observation recording is coded at a fraction of a
+    # frame per second: 0.5 fps states 1/1 here. A lower plausibility bound of
+    # 1.0 would discard it and send a real recording to the timestamp fallback.
+    payload = stream_payload(r_frame_rate="1/1")
+    assert elementary_stream_fps(payload, "h264", "h264") == 0.5
+
+
+def test_elementary_stream_fps_rejects_the_demuxer_time_base() -> None:
+    # A sequence parameter set with no timing makes libavformat report the
+    # demuxer time base here, measured at 1200000/1 on FFmpeg 6.1, 7.1 and 8.1.
+    payload = stream_payload(r_frame_rate="1200000/1")
+    assert elementary_stream_fps(payload, "h264", "h264") == 0.0
+
+
+def test_elementary_stream_fps_rejects_an_absent_rate() -> None:
+    payload = stream_payload(r_frame_rate="N/A")
+    assert elementary_stream_fps(payload, "h264", "h264") == 0.0
+
+
+def test_elementary_stream_fps_rejects_a_missing_rate() -> None:
+    payload: dict[str, object] = {}
+    assert elementary_stream_fps(payload, "h264", "h264") == 0.0
+
+
+def test_elementary_stream_fps_rejects_a_zero_denominator() -> None:
+    payload = stream_payload(r_frame_rate="0/0")
+    assert elementary_stream_fps(payload, "h264", "h264") == 0.0
+
+
+def test_elementary_stream_fps_is_absent_for_a_raw_hevc_stream() -> None:
+    # The format-name condition is what rejects this: the raw HEVC demuxer's
+    # format name is "hevc", not "h264". The codec condition alongside it
+    # restates the tick convention at the point of the halving -- HEVC counts
+    # one tick per frame, so halving its rate would be wrong by half -- and is
+    # deliberately redundant with the format name.
+    payload = stream_payload(r_frame_rate="30/1")
+    assert elementary_stream_fps(payload, "hevc", "hevc") == 0.0
+
+
+def test_elementary_stream_fps_is_absent_for_a_containerized_stream() -> None:
+    # A container states its own frame rate in r_frame_rate rather than a tick
+    # rate, so halving it would report 12.5 for this 25 fps stream.
+    payload = stream_payload(r_frame_rate="25/1")
+    assert elementary_stream_fps(payload, "mov,mp4,m4a,3gp,3g2,mj2", "h264") == 0.0
+
+
+def test_read_header_derives_the_rate_for_a_raw_stream(clips: dict[str, Path]) -> None:
+    assert read_header(clips["raw_h264"]).elementary_stream_fps == 30.0
+
+
+def test_read_header_leaves_a_containerized_stream_without_a_bitstream_rate(
+    clips: dict[str, Path],
+) -> None:
+    # r_frame_rate is the container's own 25 fps here, not a tick rate; halving
+    # it would report 12.5 for a 25 fps file.
+    assert read_header(clips["cfr_mp4"]).elementary_stream_fps == 0.0
 
 
 def test_a_file_with_no_video_stream_raises(clips: dict[str, Path]) -> None:

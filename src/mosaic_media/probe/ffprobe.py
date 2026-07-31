@@ -35,6 +35,20 @@ TimestampSource = Literal["pts", "dts", "none"]
 _ABSENT = ("", "N/A")
 _LIBAVFORMAT = "libavformat"
 
+# H.264 counts two ticks per frame, so the tick rate the sequence parameter set
+# states is twice the frame rate. The convention is codec-specific: a raw HEVC
+# stream reports one tick per frame, and halving that would be wrong by half.
+_H264_TICKS_PER_FRAME = 2.0
+
+# Above this the value is not a frame rate at all: a sequence parameter set that
+# carries no timing makes libavformat report the demuxer time base instead,
+# measured at 1200000/1, which this rejects. There is no matching lower bound,
+# because any positive rate is a real one -- a timelapse or long-observation
+# recording is coded at a fraction of a frame per second, and 1.0 would discard
+# it. The lower comparison against zero is not a judgment about which rates are
+# real; it keeps 0.0 meaning absent, which is this field's convention.
+_MAXIMUM_PLAUSIBLE_FPS = 1000.0
+
 
 @dataclass(frozen=True, slots=True)
 class Header:
@@ -55,6 +69,7 @@ class Header:
     start_time: float
     declared_duration: float
     declared_fps: float
+    elementary_stream_fps: float
     declared_frame_count: int
 
 
@@ -80,7 +95,11 @@ class Packet:
     data_hash: str = ""
 
 
-def _fraction(text: str) -> float:
+def parse_fraction(text: str) -> float:
+    """The value of a `num/den` rational as ffprobe writes it, or 0.0 when the
+    field is absent or its denominator is zero."""
+    if text in _ABSENT:
+        return 0.0
     numerator, _, denominator = text.partition("/")
     if numerator in _ABSENT:
         return 0.0
@@ -88,6 +107,32 @@ def _fraction(text: str) -> float:
         return float(numerator)
     divisor = float(denominator)
     return 0.0 if divisor == 0.0 else float(numerator) / divisor
+
+
+def elementary_stream_fps(
+    stream: dict[str, object], container: str, codec_name: str
+) -> float:
+    """The frame rate an H.264 elementary stream states in its own bitstream, or
+    0.0 when it states none.
+
+    Such a stream has no container to declare a rate, and the h264 demuxer
+    answers `avg_frame_rate` with a fixed default that is read from nothing.
+    `r_frame_rate` carries the sequence parameter set's tick rate, which is the
+    only rate the file itself states.
+
+    Restricted to the raw demuxer, whose format name is `h264`, because
+    `r_frame_rate` means something else for a container: there it is the
+    container's own frame rate, and halving it would report half the true rate
+    (measured 12.5 on a 25 fps mp4). Gating here rather than at the caller keeps
+    the field from ever holding half a real rate.
+    """
+    if container != "h264" or codec_name != "h264":
+        return 0.0
+    tick_rate = parse_fraction(str(stream.get("r_frame_rate", "0/1")))
+    rate = tick_rate / _H264_TICKS_PER_FRAME
+    if not 0.0 < rate <= _MAXIMUM_PLAUSIBLE_FPS:
+        return 0.0
+    return rate
 
 
 def _number(value: object, default: float) -> float:
@@ -203,10 +248,12 @@ def read_header(path: Path) -> Header:
     sample_aspect_ratio = str(stream.get("sample_aspect_ratio", ""))
     field_order = str(stream.get("field_order", ""))
     frame_count_text = stream.get("nb_frames")
+    container = str(fmt.get("format_name", ""))
+    codec_name = str(stream.get("codec_name", "")).lower()
 
     return Header(
-        container=str(fmt.get("format_name", "")),
-        codec_name=str(stream.get("codec_name", "")).lower(),
+        container=container,
+        codec_name=codec_name,
         pixel_format=str(stream.get("pix_fmt", "")),
         color_range=str(stream.get("color_range", "unknown")),
         color_primaries=str(stream.get("color_primaries", "unknown")),
@@ -231,9 +278,12 @@ def read_header(path: Path) -> Header:
         video_position=video_position,
         start_time=_number(stream.get("start_time"), 0.0),
         declared_duration=_number(fmt.get("duration"), 0.0),
-        # avg_frame_rate, never r_frame_rate: this is what OpenCV reads, and the
-        # disagreement between it and measurement is the whole point of the field.
-        declared_fps=_fraction(str(stream.get("avg_frame_rate", "0/1"))),
+        # This field is avg_frame_rate and nothing else: it is what OpenCV
+        # reads, and the disagreement between it and measurement is the whole
+        # point of it. The field below reads r_frame_rate for a different
+        # purpose and is not a substitute for this one.
+        declared_fps=parse_fraction(str(stream.get("avg_frame_rate", "0/1"))),
+        elementary_stream_fps=elementary_stream_fps(stream, container, codec_name),
         declared_frame_count=0
         if frame_count_text is None or str(frame_count_text) in _ABSENT
         else int(str(frame_count_text)),
