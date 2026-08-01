@@ -370,6 +370,22 @@ timeout, a cancel callback asking it to stop, a destination that is refused, or
 the output failing its acceptance probe.
 
 
+## Container image
+
+`Dockerfile` assembles a prebuilt LGPL FFmpeg -- a third-party release pinned by
+release tag and asset digest -- and compiles PyAV against it rather than against
+the FFmpeg its own wheel bundles. The FFmpeg stage rejects a download whose
+configuration carries `--enable-gpl`, `--enable-libx264`, or `--enable-libx265`;
+the test and runtime stages then run `scripts/verify-ffmpeg-lgpl.py`, which
+inspects the library the process actually links and fails if a GPL encoder is
+reachable or if the CLI on `PATH` is a different build from that library. Each
+is a build step, so a stage that fails its gate produces no image. The test stage
+also runs the suite and pins video identity against that exact FFmpeg.
+`--target ffmpeg` yields the gated prefix with the verifier installed but not yet
+run -- that stage has no PyAV to run it against -- and `--target runtime` adds
+PyAV on top.
+
+
 ## License
 
 Apache License 2.0 -- see [LICENSE](LICENSE).

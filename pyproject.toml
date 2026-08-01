@@ -33,7 +33,7 @@ markers = [
 [tool.basedpyright]
 pythonVersion = "3.12"
 typeCheckingMode = "all"
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 # numpy (the [io] extra), av (the [io] extra), and opencv-python (the bench
 # group) leak Any/Unknown through their public surfaces; that is not our
 # code's problem.

@@ -1,0 +1,25 @@
+# The build context is the package, its tests, its metadata, and the scripts
+# the images install. Everything else is excluded by default rather than
+# enumerated: a denylist has to anticipate every stray file a working checkout
+# accumulates, and the ones it misses are copied in silently.
+*
+
+!src
+!tests
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!.python-version
+
+# Copied into the images by this Dockerfile, so they have to reach the context.
+!scripts
+
+# Re-excluded after the directories above are allowed back in. Virtual
+# environments are matched at any depth: a pattern anchored at the root misses
+# one nested inside a source tree.
+**/.venv
+**/__pycache__
+**/*.egg-info
+**/.pytest_cache
+**/.ruff_cache
