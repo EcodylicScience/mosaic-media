@@ -3,27 +3,29 @@
 The reader decodes in an open av container: sequential reads decode forward;
 a seek resolves the target's preceding keyframe from the packet index, calls
 container.seek to that keyframe's presentation timestamp with backward
-resolution, verifies the decoded landing matches that keyframe, then counts
-frames forward to the target, landing frame-exact -- there is no average-rate
-index-to-timestamp conversion to land off target the way OpenCV's
-CAP_PROP_POS_FRAMES does on variable-rate files (pinned by the seek suites,
-including the variable-rate one). The codec table is a tested invariant (the
-codec guard), not a trusted bundled binary. Rotation, scaling, and the output
-pixel format are applied in process through one libav filter graph per reader (a
-transpose for the quarter-turns, hflip plus vflip for 180), golden-verified
-against system ffmpeg: bit-exact for rotation, and within a rounding step for
-scaling, where driving libswscale directly instead diverges on the chroma
-planes.
+resolution, accepts a landing at or before that keyframe, resolves where the
+decoder actually landed against the index, and counts forward from there,
+landing frame-exact -- there is no average-rate index-to-timestamp conversion
+to land off target the way OpenCV's CAP_PROP_POS_FRAMES does on variable-rate
+files (pinned by the seek suites, including the variable-rate one). The codec
+table is a tested invariant (the codec guard), not a trusted bundled binary.
+Rotation, scaling, and the output pixel format are applied in process through
+one libav filter graph per reader (a transpose for the quarter-turns, hflip
+plus vflip for 180), golden-verified against system ffmpeg: bit-exact for
+rotation, and within a rounding step for scaling, where driving libswscale
+directly instead diverges on the chroma planes.
 """
 
+import bisect
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 import av
 import av.error
 import numpy
+from av.codec.context import Flags2
 from av.container import InputContainer
 from av.filter.graph import Graph
 from av.video.frame import VideoFrame
@@ -31,7 +33,7 @@ from av.video.stream import VideoStream
 
 from ..probe.errors import MediaProbeError
 from ..probe.facts import MediaFacts
-from .index import SeekIndex, build_seek_index
+from .index import IndexSpace, SeekIndex, build_seek_index
 from .packets import scan_packets_in_process
 
 # idle: no container open. sequential: decoding forward from the window start.
@@ -63,13 +65,22 @@ class VideoReader:
     """Decode frames from one video through in-process libav bindings (PyAV).
 
     Injecting `facts` suppresses the metadata probe that sequential reads would
-    otherwise run. Seeking and sparse reads (`seek` and `read_frames`)
-    additionally need the packet index, which `facts` does not carry; inject
-    `index` as well to suppress all probing.
+    otherwise run. Seeking and sparse reads additionally need the packet index,
+    which `facts` does not carry; inject `index` as well to suppress all probing.
+    An injected index must have been built by `scan_packets_in_process` in this
+    source's own timestamp space, which `build_seek_index` records; one built
+    otherwise is rejected rather than resolved into. A reader constructed without
+    facts runs one packet scan when it first opens the container, because the
+    source's measured counts select the decoder and demuxer options.
 
     The source frame count is resolved in this order: `facts.frame_count` when
     facts are injected, then the stream's declared frame count when that is
     positive, then the length of the packet index.
+
+    `read` returns `(False, None)` only once it has delivered every frame its
+    window declares; ending short of that raises instead, so `__iter__` and
+    `read_batch` cannot mistake a short delivery for a clean end. A `seek`
+    restarts the count, which is then measured from the seek target.
 
     Every array returned by this reader -- from `read`, `read_batch`,
     `read_frames`, or iteration -- is writable, C-contiguous, and never aliases
@@ -121,11 +132,15 @@ class VideoReader:
         self._want_hwaccel: bool = bool(hwaccel)
         self._facts: MediaFacts | None = facts
         self._index: SeekIndex | None = index
+        self._ignore_edit_list: bool = False
+        self._index_space: IndexSpace = "container_default"
+        self._recovery_resolved: bool = False
         self._geometry: _Geometry | None = None
         self._stream: VideoStream | None = None
         self._decode_iterator: Iterator[VideoFrame] | None = None
-        # The first frame after a seek, decoded eagerly to verify the landing and
-        # then held so _read_current returns it rather than a second decode.
+        # The first frame after a seek, decoded eagerly to verify and resolve
+        # the landing and then held so _read_current returns it rather than a
+        # second decode.
         self._pending_frame: VideoFrame | None = None
         self._rotation_degrees: int = 0
         self._conversion_graph: Graph | None = None
@@ -133,16 +148,56 @@ class VideoReader:
         self._decoder_pos: int = 0  # next absolute source frame the decoder emits
         self._target: int = 0  # next absolute frame read() returns
         self._last_index: int = 0  # index of the most recently returned frame
+        self._delivered: int = 0
+        self._count_origin: int = 0  # frame index the delivery count starts at
 
     # --- Container lifecycle ---
+
+    def _resolve_recovery_options(self) -> None:
+        """Decide the decoder and demuxer options before the container opens.
+
+        Injected facts answer this without a scan, which is what keeps the
+        injected-facts path free of the demux pass it does not run today. Without
+        facts the scan runs here and its index is built immediately, so no packet
+        tuple outlives this method and `_ensure_index` has nothing to repeat.
+        """
+        if self._recovery_resolved:
+            return
+        if self._facts is not None:
+            self._ignore_edit_list = self._facts.discard_flagged_packets > 0
+            self._recovery_resolved = True
+            if self._ignore_edit_list:
+                self._index_space = "edit_list_ignored"
+            return
+        packets, _source = scan_packets_in_process(self._path)
+        self._ignore_edit_list = any(packet.discard for packet in packets)
+        if self._ignore_edit_list:
+            self._index_space = "edit_list_ignored"
+            # A gated source must be indexed in the gated space, so the ungated
+            # scan just paid cannot be reused.
+            packets, _source = scan_packets_in_process(
+                self._path, ignore_edit_list=True
+            )
+        # Build the index here rather than keeping the packets for a later
+        # _ensure_index. A sequential read of a container that declares its frame
+        # count never reaches _ensure_index, so holding the tuple would retain
+        # every packet of the file for the reader's lifetime to serve a call that
+        # never comes. The index is a fraction of its size.
+        if self._index is None:
+            self._index = build_seek_index(
+                packets, source="in_process", space=self._index_space
+            )
+        self._recovery_resolved = True
 
     def _ensure_container(self) -> tuple[InputContainer, VideoStream]:
         container = self._container
         stream = self._stream
         if container is not None and stream is not None:
             return container, stream
+        self._resolve_recovery_options()
+        options = {"ignore_editlist": "1"} if self._ignore_edit_list else {}
         try:
-            container = av.open(str(self._path))
+            container = av.open(str(self._path), options=options)
         except av.error.FFmpegError as exc:
             message = f"failed to open {self._path}: {exc}"
             raise MediaProbeError(message) from exc
@@ -155,6 +210,27 @@ class VideoReader:
         self._container = container
         self._stream = stream
         return container, stream
+
+    def _apply_show_all(self, stream: VideoStream, *, at_stream_start: bool) -> None:
+        """Emit packets preceding the first keyframe of this decode segment
+        rather than discarding them, but only when the segment begins at the
+        start of the stream -- where a source's own leading non-keyframes live.
+        They decode to the decoder's own output rather than to pictures, because
+        the reference they difference against is not in the file -- but that
+        output is what the file contains, and dropping it leaves indices the
+        frame model declares unreachable.
+
+        A segment that begins elsewhere, after a backward seek, must decode with
+        the flag clear. It would otherwise emit the previous group's leading
+        pictures, decoded against references the seek discarded -- and those
+        pictures carry the timestamps of real frames, so they occupy the index
+        ranks the frame model assigns to them. A caller reading at one of those
+        indices would get content decoded from nothing.
+        """
+        if at_stream_start:
+            stream.codec_context.flags2 |= Flags2.show_all
+        else:
+            stream.codec_context.flags2 &= ~Flags2.show_all
 
     def _probe_rotation(self) -> int:
         # The av stream exposes no rotation getter before decode, so open a
@@ -173,11 +249,34 @@ class VideoReader:
     # --- Metadata resolution ---
 
     def _ensure_index(self) -> SeekIndex:
+        # Above both branches, not inside the first. The space an injected index
+        # is validated against is only known once the options are resolved, and
+        # _position_at reaches here before _ensure_container -- so with facts
+        # injected the resolver has not otherwise run, and the comparison below
+        # would use __init__'s placeholder. A gated reader handed an ungated
+        # index would then pass validation and decode in one timestamp space
+        # against an index built in the other.
+        self._resolve_recovery_options()
         if self._index is None:
-            packets, _source = scan_packets_in_process(self._path)
-            self._index = build_seek_index(
-                packets, source="in_process", space="container_default"
+            # Only reached with facts injected: the factless path built the index
+            # while resolving its options, because it had scanned already.
+            packets, _source = scan_packets_in_process(
+                self._path, ignore_edit_list=self._ignore_edit_list
             )
+            self._index = build_seek_index(
+                packets, source="in_process", space=self._index_space
+            )
+        elif (
+            self._index.source != "in_process" or self._index.space != self._index_space
+        ):
+            message = (
+                f"seek index for {self._path} was built by the "
+                f"{self._index.source} scanner in the {self._index.space} "
+                f"timestamp space, but this reader decodes in the "
+                f"{self._index_space} space with the in-process scanner; "
+                "resolving across the two returns the wrong frame"
+            )
+            raise MediaProbeError(message)
         return self._index
 
     def _ensure_ready(self) -> _Geometry:
@@ -263,8 +362,8 @@ class VideoReader:
         """Pull the next frame from the decode iterator in presentation order,
         or None at a clean end of stream. A truncated or otherwise undecodable
         file raises FFmpegError here, which maps to MediaProbeError, so a decode
-        that dies mid-stream surfaces as an error rather than a silent short
-        read."""
+        that dies mid-stream surfaces as an error here rather than later, as a
+        shortfall counted at end of stream."""
         pending = self._pending_frame
         if pending is not None:
             self._pending_frame = None
@@ -370,6 +469,7 @@ class VideoReader:
             return
         geometry = self._ensure_ready()
         container, stream = self._ensure_container()
+        self._apply_show_all(stream, at_stream_start=keyframe_index == 0)
         offset = self._to_stream_offset(stream, keyframe_time)
         try:
             container.seek(offset, stream=stream, backward=True)
@@ -379,21 +479,52 @@ class VideoReader:
         self._decode_iterator = container.decode(stream)
         self._decoder_pos = keyframe_index
         self._pending_frame = None
-        # A backward seek to the keyframe's own timestamp must land on that
-        # keyframe. Decode it eagerly and verify its presentation time before
-        # trusting the arithmetic frame count that discards forward to the
-        # target; landing on a different keyframe would silently return the
-        # wrong frame. The decoded keyframe is held for _read_current.
+        # A landing at or before the requested keyframe is legitimate:
+        # container seek granularity is coarser than the keyframe list on some
+        # formats, so the decoder can land on an earlier picture than the
+        # index named. A landing after the requested keyframe means the
+        # target's own references were skipped, so counting forward would
+        # decode from the wrong prefix, and that still raises below. The
+        # eager decode resolves the landing's index rank rather than merely
+        # checking it, so the arithmetic frame count that discards forward to
+        # the target starts from where the decoder actually is. The decoded
+        # frame is held for _read_current.
         first = self._decode_next()
         if first is not None:
             observed = float(first.time)
-            if geometry.fps > 0 and abs(observed - keyframe_time) > 0.5 / geometry.fps:
+            tolerance = 0.5 / geometry.fps if geometry.fps > 0 else 0.0
+            if geometry.fps > 0 and observed > keyframe_time + tolerance:
                 message = (
                     f"seek landing for {self._path} at frame {target}: expected "
-                    f"keyframe time {keyframe_time} but decoded {observed}"
+                    f"keyframe time {keyframe_time} or earlier but decoded "
+                    f"{observed}"
                 )
                 raise MediaProbeError(message)
+            # Landing earlier is legitimate: container seek granularity is
+            # coarser than the keyframe list on some formats. Resolve where the
+            # decoder actually is, then count forward from there.
+            self._decoder_pos = self._index_rank_at(observed, tolerance)
             self._pending_frame = first
+
+    def _index_rank_at(self, observed: float, tolerance: float) -> int:
+        """The index rank of the frame the decoder just emitted.
+
+        The index and the decode are built by one scanner in one timestamp
+        space, so their times agree exactly and the tolerance is margin, not
+        noise coverage. A time matching no entry means the index does not
+        describe this decode, which is a defect rather than a seek that missed.
+        """
+        index = self._ensure_index()
+        position = bisect.bisect_left(index.frame_times, observed - tolerance)
+        if position < len(index.frame_times) and (
+            abs(index.frame_times[position] - observed) <= tolerance
+        ):
+            return position
+        message = (
+            f"seek landing for {self._path} decoded a frame at {observed}, "
+            "which matches no entry in its seek index"
+        )
+        raise MediaProbeError(message)
 
     def _read_current(self, geometry: _Geometry) -> numpy.ndarray | None:
         """Decode forward to `self._target` and return that frame, advancing the
@@ -417,6 +548,7 @@ class VideoReader:
         window_end = self._window_end(geometry)
         if self._mode == "idle":
             self._target = self._start_frame
+            self._count_origin = self._start_frame
             self._mode = "sequential"
             if self._start_frame < window_end:
                 self._start_reading()
@@ -425,7 +557,17 @@ class VideoReader:
         self._last_index = self._target
         frame = self._read_current(geometry)
         if frame is None:
+            expected = len(range(self._count_origin, window_end, self._frame_step))
+            if self._delivered < expected:
+                message = (
+                    f"{self._path} delivered {self._delivered} of {expected} "
+                    "frames its facts declare; the source carries packets that "
+                    "decode to no frame, and its analysis verdict requires a "
+                    "transcode before it can be read"
+                )
+                raise MediaProbeError(message)
             return False, None
+        self._delivered += 1
         self._target += self._frame_step
         return True, frame
 
@@ -436,6 +578,7 @@ class VideoReader:
             self._position_at(self._start_frame)
         else:
             container, stream = self._ensure_container()
+            self._apply_show_all(stream, at_stream_start=True)
             self._decode_iterator = container.decode(stream)
             self._decoder_pos = 0
 
@@ -477,6 +620,8 @@ class VideoReader:
         self._position_at(target)
         self._mode = "positioned"
         self._target = target
+        self._delivered = 0
+        self._count_origin = target
 
     def read_frames(
         self, indices: Sequence[int]
@@ -503,6 +648,13 @@ class VideoReader:
                 # read() then returns that frame with the correct index instead
                 # of mislabeling it as this sparse target.
                 self._target = self._decoder_pos
+                # Rebase the shortfall count onto that cursor. read() counts one
+                # delivery per grid slot from _count_origin, and a sparse target
+                # need not lie on the grid, so counting this frame would leave a
+                # surplus that hides a one-slot shortfall at a stride above one.
+                # Excluding it from both sides is what seek() already does.
+                self._delivered = 0
+                self._count_origin = self._target
                 yield target, frame
 
     def __iter__(self) -> Iterator[tuple[int, numpy.ndarray]]:
@@ -526,7 +678,7 @@ class VideoReader:
             if container is not None:
                 container.close()
 
-    def __enter__(self) -> "VideoReader":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:

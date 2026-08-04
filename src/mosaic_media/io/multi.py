@@ -15,6 +15,7 @@ import bisect
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Self
 
 import numpy
 
@@ -243,7 +244,7 @@ class MultiVideoReader:
                 self._reader.close()
                 self._reader = None
 
-    def __enter__(self) -> "MultiVideoReader":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:

@@ -1,15 +1,14 @@
-"""Media fixtures, built by the ffmpeg on PATH or copied from `tests/assets/`.
+"""Media fixtures, built by the ffmpeg on PATH, copied from `tests/assets/`, or
+built with PyAV.
 
 ffmpeg is a documented system dependency, so a missing encoder is a failure,
 not a skip. The encoders used here are the ones an LGPL build carries: libvpx,
 mjpeg, aac, and the native `-c copy` remuxes.
 
-H.264 clips are copied from `tests/assets/` rather than encoded: no H.264
-encoder is available on both the LGPL build the consumers deploy and the
-development machines the suite runs on. Decoding is unaffected, so a committed
-clip costs nothing to consume. See `tests/assets/README.md` for the encoder
-listing behind that and for provenance, and `tests/test_encoder_guard.py` for
-the rule.
+H.264 and HEVC clips are copied from `tests/assets/` rather than encoded.
+Their decoders are native and LGPL, so a committed clip costs nothing to
+consume. See `tests/assets/README.md` for the encoder reasoning and
+provenance, and `tests/test_encoder_guard.py` for the rule.
 
 Copies land in the tmp root because tests remux and truncate from these clips;
 the committed originals are never handed out directly.
@@ -21,6 +20,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
+import av
 import pytest
 
 SOURCE = ["-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=2"]
@@ -34,7 +34,9 @@ AssetName = Literal[
     "faststart.mp4",
     "h264.avi",
     "h264_gop12.mp4",
+    "hevc.mp4",
     "long_gop.mp4",
+    "open_gop.mp4",
     "raw.h264",
     "raw_fractional_rate.h264",
 ]
@@ -218,3 +220,108 @@ def h264_gop12_clip(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
 def long_gop_clip(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     root = tmp_path_factory.mktemp("long_gop")
     yield asset("long_gop.mp4", root / "long_gop.mp4")
+
+
+@pytest.fixture(scope="session")
+def avi_starting_on_non_keyframes(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[Path]:
+    """An AVI whose first packets precede its first keyframe.
+
+    A recording cut mid-stream has this shape, and a copy remux of it does not
+    round trip: ffmpeg does not copy initial non-keyframes, so the leading
+    packets are dropped and the output clock keeps their offset, producing a
+    non-zero `start_time` the source never had.
+
+    Built by muxing the committed clip's packets from index 1, which drops its
+    leading keyframe and leaves 24 non-keyframes ahead of the keyframe at 25.
+    ffmpeg cannot produce this shape: seeking a `-c copy` cut lands on a
+    keyframe by construction, which is the very behavior under test.
+
+    Timestamps are renumbered contiguously from zero rather than carried over.
+    Carrying them leaves the dropped packet's period as a gap between the first
+    two, which the whole-file grid fit measures as genuine drift -- the clip then
+    probes variable-rate and takes the re-encode path, testing something other
+    than the copy remux it exists for.
+    """
+    root = tmp_path_factory.mktemp("headless_avi")
+    source = asset("h264.avi", root / "h264.avi")
+    destination = root / "starts_on_non_keyframes.avi"
+    with (
+        av.open(str(source)) as input_container,
+        av.open(str(destination), mode="w") as output_container,
+    ):
+        input_stream = input_container.streams.video[0]
+        output_stream = output_container.add_stream_from_template(input_stream)
+        written = 0
+        for position, packet in enumerate(input_container.demux(input_stream)):
+            if packet.size == 0 or position == 0:
+                continue
+            packet.stream = output_stream
+            packet.pts = written
+            packet.dts = written
+            written += 1
+            output_container.mux(packet)
+    yield destination
+
+
+@pytest.fixture(scope="session")
+def vp8_webm_clip(clips: dict[str, Path]) -> Path:
+    return clips["vp8_webm"]
+
+
+@pytest.fixture(scope="session")
+def vp9_webm_clip(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    """VP9, so every member of the shipped trusted codec set is measured.
+
+    libvpx-vp9 is non-GPL and present in the FFmpeg this suite runs against, so
+    this member is generated rather than committed.
+    """
+    root = tmp_path_factory.mktemp("vp9")
+    yield build(root / "vp9.webm", "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p")
+
+
+@pytest.fixture(scope="session")
+def hevc_clip(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    """HEVC, committed for the reason every H.264 asset here is.
+
+    Its decoder is native and LGPL, so the suite reads it with no extra
+    dependency. It backs the trusted-codec delivery test and the mp4 carriage
+    measurement, so both sets are measured on this codec rather than assuming it.
+    """
+    root = tmp_path_factory.mktemp("hevc")
+    yield asset("hevc.mp4", root / "hevc.mp4")
+
+
+@pytest.fixture(scope="session")
+def cfr_mp4_clip(clips: dict[str, Path]) -> Path:
+    return clips["cfr_mp4"]
+
+
+@pytest.fixture(scope="session")
+def open_gop_clip(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    """50 frames, 25 fps, GOP 12, open GOP with B-frames.
+
+    Every keyframe after the first is followed in decode order by pictures that
+    precede it in presentation order -- the shape a decoder suppresses after a
+    seek. Committed rather than encoded for the reason every H.264 asset here is.
+    """
+    root = tmp_path_factory.mktemp("open_gop")
+    yield asset("open_gop.mp4", root / "open_gop.mp4")
+
+
+@pytest.fixture(scope="session")
+def preroll_mp4(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    """An mp4 whose edit list marks its leading packets "do not present".
+
+    A `-c copy` cut at 0.2 s writes an edit list that skips the pre-roll rather
+    than re-encoding it, so the demuxer delivers five discard-flagged packets at
+    negative timestamps: `-0.200000,KD_` followed by four `_D_`. That is the
+    shape `ignore_editlist` exists for, and the only fixture in the suite that
+    fires the gate. Built from a committed asset, so no encoder is involved.
+    """
+    root = tmp_path_factory.mktemp("preroll")
+    source = asset("cfr.mp4", root / "cfr.mp4")
+    yield build(
+        root / "preroll.mp4", "-c", "copy", source=["-ss", "0.2", "-i", str(source)]
+    )

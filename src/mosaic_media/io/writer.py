@@ -18,7 +18,7 @@ the writer and the transcode produce the same codec.
 import warnings
 from fractions import Fraction
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 import av
 import av.error
@@ -291,7 +291,7 @@ class FFmpegVideoWriter:
             message = f"failed to finalize {self._output_path}: {exc}"
             raise MediaProbeError(message) from exc
 
-    def __enter__(self) -> "FFmpegVideoWriter":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:

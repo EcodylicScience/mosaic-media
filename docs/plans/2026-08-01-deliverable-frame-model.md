@@ -87,7 +87,9 @@ Task 1 inherits it:
   escalates a copy remux to an AV1 re-encode when mp4 cannot carry the source
   codec. Task 6 extends that wrapper; it does not rewrite it.
 - Modified `tests/transcode/conftest.py`: fixtures `avi_starting_on_non_keyframes`
-  and `lying_header_vp8_webm`.
+  and `lying_header_vp8_webm`, neither of them tracked. Task 3 commits this file
+  when it moves the first fixture out, which tracks the second as a side effect
+  and makes the file's formatting and docstring this branch's to keep correct.
 - Modified `tests/transcode/test_commands.py`, `tests/transcode/test_convert.py`.
   **Two tests in these files are red and assert a superseded contract.** Task 6
   rewrites them; do not delete them.
@@ -583,8 +585,14 @@ Implements spec changes 1 and 2, and change 3's rejection.
 `h264_gop12_clip` and `long_gop_clip` already live in
 `tests/helpers/media_fixtures.py` beside `asset` and `AssetName`. Put these two
 there too rather than in a conftest, and delete the copy in
-`tests/transcode/conftest.py` -- one definition, every suite. That conftest's
-docstring says "Four defect files"; it becomes three.
+`tests/transcode/conftest.py` -- one definition, every suite.
+
+Then correct that conftest's docstring count against what the file actually
+defines after the move, rather than against any number written here. Committing
+it to remove one fixture commits the whole file, including
+`lying_header_vp8_webm`, which was uncommitted working-tree state and which the
+docstring's enumeration does not mention. Count the fixtures and name them
+all.
 
 `tests/helpers/media_fixtures.py`'s own docstring says fixtures are built by the
 ffmpeg on PATH or copied from `tests/assets/`. `avi_starting_on_non_keyframes` is
@@ -823,6 +831,7 @@ commit on an unused import, and every later task extends this same file:
 | --- | --- |
 | 3 | `numpy`, `av`, `Path`, `VideoReader`, `probe_media` |
 | 3 (provenance tests) | `pytest`, `dataclasses.replace`, `MediaProbeError`, `index_for` |
+| 3 (decoder flag pin) | `Flags2` from `av.codec.context` |
 | 5 | nothing new |
 | 6 | `DEFAULT_THRESHOLDS` |
 | 9 | `count_packet_scans`, `mosaic_media.io.reader as reader_module` |
@@ -840,7 +849,7 @@ replaces -- ruff `F401` fails the commit otherwise. Task 8's addition to
 
 Run: `uv run pytest tests/io/test_reader_recovery.py -v`
 
-Expected: **five red, three green**, of eight.
+Expected: **five red, four green**, of nine.
 
 | red test | fails as |
 | --- | --- |
@@ -855,6 +864,7 @@ Expected: **five red, three green**, of eight.
 | `test_show_all_is_a_no_op_on_a_source_opening_on_a_keyframe` | already true; kept true |
 | `test_show_all_is_a_no_op_on_an_open_gop_source` | already true; kept true |
 | `test_open_gop_seeks_land_frame_exact` | already true; guards presentation-order resolution |
+| `test_show_all_is_set_only_for_a_segment_starting_at_the_stream_start` | asserts decoder state against the scoping rule, so no later change to landing tolerance can mask a regression |
 
 Paste the real output into the task record rather than confirming the
 prediction. A count or a name that does not match means this table is stale, and
@@ -933,21 +943,61 @@ In `_ensure_container`, after the early return and before `av.open`:
             container = av.open(str(self._path), options=options)
 ```
 
-and after the stream is captured:
+The frames-preserving decoder flag does NOT go here. Setting it at container
+open applies it to every decode segment, and after a backward seek the segment
+begins at the seek target rather than at the stream start -- so the flag emits
+the previous group's leading pictures, decoded against references the seek
+discarded. Those pictures carry the timestamps of real frames, so they occupy
+the index ranks the frame model assigns to them, and a caller reading at one of
+those indices would get content decoded from nothing. Measured on
+`tests/assets/open_gop.mp4`: a seek to the keyframe at 0.480 decodes 0.400,
+0.440, 0.480 with the flag against 0.480, 0.520, 0.560 without it, and the two
+extra pictures do not match a sequential read at their own timestamps.
+
+Add instead a helper that decides per segment, and call it where each segment
+begins:
 
 ```python
-        stream.thread_type = "AUTO"
-        # Emit frames for packets preceding the first keyframe rather than
-        # discarding them. They decode to the decoder's own output rather than to
-        # pictures, because the reference they difference against is not in the
-        # file -- but that output is what the file contains, and dropping it
-        # leaves indices the frame model declares unreachable. A source opening
-        # on a keyframe has none of these packets, so this cannot change it.
-        stream.codec_context.flags2 |= Flags2.show_all
+    def _apply_show_all(self, stream: VideoStream, *, at_stream_start: bool) -> None:
+        """Emit packets preceding the first keyframe of this decode segment
+        rather than discarding them, but only when the segment begins at the
+        start of the stream -- where a source's own leading non-keyframes live.
+        They decode to the decoder's own output rather than to pictures, because
+        the reference they difference against is not in the file -- but that
+        output is what the file contains, and dropping it leaves indices the
+        frame model declares unreachable.
+
+        A segment that begins elsewhere, after a backward seek, must decode with
+        the flag clear. It would otherwise emit the previous group's leading
+        pictures, decoded against references the seek discarded -- and those
+        pictures carry the timestamps of real frames, so they occupy the index
+        ranks the frame model assigns to them. A caller reading at one of those
+        indices would get content decoded from nothing.
+        """
+        if at_stream_start:
+            stream.codec_context.flags2 |= Flags2.show_all
+        else:
+            stream.codec_context.flags2 &= ~Flags2.show_all
 ```
+
+Two call sites, both after the container and stream are in hand:
+
+- in `_start_reading`, on the branch that decodes from the container start
+  rather than positioning, with `at_stream_start=True`;
+- in `_position_at`, after `keyframe_index` is resolved and before the seek,
+  with `at_stream_start=keyframe_index == 0`.
+
+Index 0 is where a source's leading non-keyframes live: a stream whose keyframe
+flags begin later resolves every target below them to index 0 through
+`preceding_keyframe`'s fallback, so the flag is set exactly when the segment can
+contain them.
 
 Import `Flags2` from `av.codec.context` and `Packet` from `..probe.ffprobe` at
 module top.
+
+This supersedes the spec's unconditional application. The reason it changed, and
+the measurements behind it, are in
+`docs/specs/2026-08-01-deliverable-frame-model-amendments.md`.
 
 - [ ] **Step 6: Build and validate the index in the reader's own space**
 
@@ -1104,15 +1154,15 @@ def test_a_landing_after_the_requested_keyframe_raises(
 
 
 def test_a_landing_matching_no_index_entry_raises(clips: dict[str, Path]) -> None:
-    # An index whose times are all a frame period off describes a different
-    # decode than the one running. Resolution must say so rather than round to a
-    # neighbor.
+    # The tolerance is half the index spacing, so acceptance windows tile the
+    # timeline: inside the index's span a landing always resolves to the nearest
+    # entry, by design, and the raise is the out-of-span backstop. Shifting every
+    # time by a full period rather than a half is what pushes the landing before
+    # the first entry, where it matches nothing at all -- a half-period shift is
+    # accepted, because period * 0.5 and the tolerance are the same double.
     path = clips["cfr_30fps_mp4"]
     facts = probe_media(path)
     real = index_for(path)
-    # A full frame period, not half: the acceptance tolerance is 0.5 / fps, and
-    # period * 0.5 is the same double, so a half-period shift is accepted and the
-    # test would never raise.
     period = 1.0 / facts.fps
     shifted = replace(
         real, frame_times=tuple(time + period for time in real.frame_times)
@@ -1605,9 +1655,15 @@ has:
     argv: list[str] = [*_BASE, *input_flags, "-i", str(source)]
 ```
 
-`+showall` is unconditional for the same structural reason the reader applies it
-unconditionally. `-ignore_editlist` stays gated, because on a source with a
-benign edit list it moves the presentation origin.
+`+showall` is unconditional here, and the reason is the transcode's decode
+shape rather than anything the reader does: ffmpeg decodes the input once,
+sequentially, from the start of the file, and never seeks. Its only decode
+segment therefore begins at the stream start, which is exactly the segment where
+the flag has legitimate work to do, so there is nothing to gate. The reader
+gates it per segment only because the reader seeks.
+
+`-ignore_editlist` stays gated, because on a source with a benign edit list it
+moves the presentation origin.
 
 - [ ] **Step 9: Run the affected suites**
 
@@ -2156,15 +2212,73 @@ The last commit on the branch before the merge, so nothing it archives is still
 in flight.
 
 **Files:**
-- Modify: `docs/issues/_INDEX.md`; rename two issue files on disk
+- Modify: `docs/specs/2026-08-01-deliverable-frame-model.md`,
+  `docs/specs/_INDEX.md`, `docs/plans/_INDEX.md`, `docs/issues/_INDEX.md`
+- Rename on disk: the spec, the amendments document, this plan, and the issue
+  files this work closes
 
-- [ ] **Step 1: Confirm the archive suffixes are ignored**
+- [ ] **Step 1: Fold the confirmed amendments into the spec**
+
+Before anything is archived, because archiving the spec with an amendment
+outstanding discards it.
+
+`docs/specs/2026-08-01-deliverable-frame-model-amendments.md` holds design
+changes found during implementation and deliberately kept out of the spec until
+implementation confirmed them. Each amendment carries a **Status:** line and an
+**Amends:** line. For every amendment whose status reads confirmed, rewrite each
+spec passage its **Amends:** line names, so the spec describes what was built.
+For any amendment the implementation refuted, delete it from the spec's
+description and record in the amendments document that it was refuted and why;
+do not silently drop it.
+
+Work from the **Amends:** lines rather than from a search for changed text. An
+amendment can amend a passage that is not wrong on its face -- a table row, a
+verification bullet, a cross-reference -- and those are the ones a search for
+stale wording will not reach.
+
+An amendment's sections that name no spec passage stay in the amendments
+document rather than moving into the spec. That is the intended division: the
+spec carries the conclusions, the archived amendment carries the measurements
+behind them, retrievable at the hash its index row records.
+
+The one exception is a structural property of the code that a rewritten passage
+depends on. Move that into the passage, without its provenance and without its
+measurements. Amendment 1 has one: the artifact reaches a caller through the
+reusable-decoder branch, which returns before any landing verification, so no
+landing tolerance can contain it and the per-segment scoping cannot later be
+relaxed into a landing-check gate. Folded without that, change 1 states the rule
+and nothing states why the obvious alternative fails.
+
+Then check the fold rather than assuming it: for each amendment, confirm the
+spec no longer states the superseded claim anywhere, including in tables and
+verification bullets, not only in the prose section the amendment's first
+sentence names.
+
+Record the commit this branch is on before you begin, as `<pre-fold-commit>`;
+step 5 needs it.
+
+Commit the fold on its own, before anything is archived:
+
+```bash
+git add docs/specs/
+git commit -m "Describe the reader's decoder flag scope as built"
+```
+
+This commit is not optional and its order is not incidental. The archiving
+commit removes the spec from tracking, so an uncommitted fold never enters
+history at all -- and the hash the next step records, which becomes the index
+row's only retrieval key once the document is untracked, would resolve to the
+spec still carrying the superseded claim. The folded spec would survive only as
+a gitignored file on whichever machine ran the archive. Write the message to
+describe what the spec now says, not that a fold happened.
+
+- [ ] **Step 2: Confirm the archive suffixes are ignored**
 
 `*.implemented.md`, `*.superseded.md` and `*.closed.md` must be in
 `.gitignore` (they are, at `.gitignore:19-21`) so a renamed doc stays on disk
 without re-entering tracking.
 
-- [ ] **Step 2: Archive the two issues this work closes**
+- [ ] **Step 3: Archive the issues this work closes**
 
 Only after the suite is green. Record `git rev-parse HEAD` first -- the archiving
 commit's parent is the last commit that tracks each doc, and a commit cannot
@@ -2173,26 +2287,111 @@ contain its own hash.
 ```bash
 git rm --cached docs/issues/reader-cannot-deliver-frames-the-facts-declare.md
 git rm --cached docs/issues/playback-transcode-introduces-non-zero-start-time.md
+git rm --cached docs/issues/context-managers-annotate-the-concrete-class-not-self.md
+git rm --cached docs/issues/sparse-reads-undercount-the-sequential-delivery-count.md
 mv docs/issues/reader-cannot-deliver-frames-the-facts-declare.md \
    docs/issues/reader-cannot-deliver-frames-the-facts-declare.closed.md
 mv docs/issues/playback-transcode-introduces-non-zero-start-time.md \
    docs/issues/playback-transcode-introduces-non-zero-start-time.closed.md
+mv docs/issues/context-managers-annotate-the-concrete-class-not-self.md \
+   docs/issues/context-managers-annotate-the-concrete-class-not-self.closed.md
+mv docs/issues/sparse-reads-undercount-the-sequential-delivery-count.md \
+   docs/issues/sparse-reads-undercount-the-sequential-delivery-count.closed.md
 ```
 
-Prepend the closed-doc disclaimer to each, flip both rows in
-`docs/issues/_INDEX.md` from `active` to `closed` with the recorded hash, and
-commit the removals and the index edits together.
+Prepend the closed-doc disclaimer to each, and flip the row of each issue
+untracked above from `active` to `closed` with the recorded hash. Leave every
+other row alone: the index carries active rows for open work this branch does
+not close, and marking one closed while its document stays tracked is the state
+the archiving convention forbids in either direction.
 
-Both issues proposed mechanisms that turned out wrong; the disclaimer points at
-the spec so a future reader does not act on the superseded diagnosis.
+Each closed row's description gains a `Resolved:` clause saying what landed.
+Once a document is untracked its row is the only discoverable record of it, and
+a row left describing the defect in the present tense describes code this branch
+changed.
 
-- [ ] **Step 3: Verify the archive touched no code**
+Do not commit yet -- step 4 adds this work package's own spec, amendments
+document and plan to the same commit.
+
+`reader-cannot-deliver-frames-the-facts-declare` and
+`playback-transcode-introduces-non-zero-start-time` proposed mechanisms that
+turned out wrong, so their disclaimer points at the spec, and a future reader
+does not act on the superseded diagnosis.
+
+`sparse-reads-undercount-the-sequential-delivery-count` is also one this branch
+opened and closed, and needs no pointer either: its own document records both
+what closed it and which half of its deferral reasoning held.
+
+`context-managers-annotate-the-concrete-class-not-self` is one this branch
+opened and closed. The io context managers annotated `__enter__` with a quoted
+concrete class rather than `Self`, so a
+subclass lost its own type inside a `with` block and any method it added failed
+the strict type check. All three modules, and the subclass that paid the cost,
+are this branch's own diff. The commit returning `Self` from all three satisfies
+the issue's closing criteria, so its proposed fix is the one that shipped and it
+needs no pointer to a superseded diagnosis.
+
+- [ ] **Step 4: Archive the work package's own documents, and commit**
+
+The spec, the amendments document and this plan are implemented once the branch
+is green, and leave tracking in the same commit as the issues:
 
 ```bash
-git diff <pre-archive-commit> -- src/ tests/
+git rm --cached docs/specs/2026-08-01-deliverable-frame-model.md
+git rm --cached docs/specs/2026-08-01-deliverable-frame-model-amendments.md
+git rm --cached docs/plans/2026-08-01-deliverable-frame-model.md
+mv docs/specs/2026-08-01-deliverable-frame-model.md \
+   docs/specs/2026-08-01-deliverable-frame-model.implemented.md
+mv docs/specs/2026-08-01-deliverable-frame-model-amendments.md \
+   docs/specs/2026-08-01-deliverable-frame-model-amendments.implemented.md
+mv docs/plans/2026-08-01-deliverable-frame-model.md \
+   docs/plans/2026-08-01-deliverable-frame-model.implemented.md
 ```
 
-Expected: empty. Code and tests must be byte-identical to the pre-archive state.
+`git rm --cached` untracks without deleting; the rename then takes the file to a
+suffix `.gitignore` keeps out of tracking. Renaming alone leaves the original
+path tracked and deleted, which is the state that looks archived and is not.
+
+Flip the row of each document untracked above in `docs/specs/_INDEX.md` and
+`docs/plans/_INDEX.md` from `active` to `implemented` with the recorded parent
+hash. Leave every other row alone, for the reason step 3 gives: another work
+package may have a spec or plan of its own in flight by the time this branch
+merges, and its row is not this task's to move.
+
+Then commit everything this task untracked and every index it edited, as one
+commit:
+
+```bash
+git add docs/specs/_INDEX.md docs/plans/_INDEX.md docs/issues/_INDEX.md
+git commit -m "Archive the frame delivery documents and the issues they close"
+```
+
+One archiving commit carries every document this task untracked and every index
+recording where they went. Confirm it before moving on: `git status --short`
+must show no `D` entry for any document this task untracked, and
+`git ls-files docs/` must list none of them.
+
+The amendments document is archived beside the spec it folded into, not deleted:
+its measurements are the record of why the spec says what it says, and the spec
+carries the conclusions without the evidence.
+
+An archiving run that leaves any of these rows reading `active`, or any of these
+documents tracked, is incomplete.
+
+- [ ] **Step 5: Verify the archive touched no code**
+
+```bash
+git diff <pre-fold-commit> -- src/ tests/
+```
+
+Expected: empty. Code and tests must be byte-identical to the state before this
+task began.
+
+The base is `<pre-fold-commit>`, recorded in step 1, not the commit before the
+archiving commit. Step 1 now has its own commit, so an archive-relative base
+would place this check after the fold and it would pass by construction --
+seeing nothing of the one step in this task that edits a file for its content
+rather than renaming it. This is the only guard on that step.
 
 ---
 
@@ -2211,8 +2410,8 @@ shapes -> Task 3 step 2; mp4 carriage measured member by member -> Task 7.
 `tests/assets/` with its recipe in that directory's README; the mid-stream shape
 is the generated `avi_starting_on_non_keyframes`. Both measured:
 `show_all` is a no-op on the open-GOP clip (50 frames either way, identical
-timestamps and pixels), and reader seeks land frame-exact on it at all ten
-sampled targets, including the two leading pictures where a decode-order nearest
+timestamps and pixels), and reader seeks land frame-exact on it at every
+sampled target, including the two leading pictures where a decode-order nearest
 keyframe returns the right timestamp with the wrong pixels. The second result is
 a test rather than a note because presentation-order keyframe resolution is what
 makes open GOP work, and an optimization switching to decode-order would pass

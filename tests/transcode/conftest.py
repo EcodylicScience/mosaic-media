@@ -1,9 +1,11 @@
 """Defect fixtures for the transcode acceptance tests.
 
 The tail-moov and rotated corpora reuse the shared `clips` fixture (`cfr_mp4`,
-`rotated_mp4`). Three defect files the shared corpus lacks are generated here: a
-genuinely variable-frame-rate clip, a lying-timing-header clip, and an
-h264-in-avi clip (a supported codec in an unopenable container).
+`rotated_mp4`). Four defect files the shared corpus lacks are generated here: a
+genuinely variable-frame-rate clip, a lying-timing-header clip, an h264-in-avi
+clip (a supported codec in an unopenable container), and a VP8 clip whose
+header lies about its rate, in the container VP8 belongs to -- the case where
+the analysis fix is a copy remux the mp4 muxer cannot carry.
 """
 
 from collections.abc import Iterator
@@ -95,3 +97,28 @@ def h264_in_avi(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     # clip carries `-bf 0`, which keeps that copy free of B-frame reordering
     # trouble. The codec is the point of the case, so no substitute serves.
     yield asset("h264.avi", root / "h264.avi")
+
+
+@pytest.fixture(scope="session")
+def lying_header_vp8_webm(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    """A VP8 clip whose header lies about its rate, in the container VP8 belongs to.
+
+    The analysis fix for a timing-metadata lie is a `-c copy` remux, and the
+    converter always writes mp4 -- which has no tag for VP8, so that copy dies in
+    the muxer before a header is written. The codec is the point of the case, so
+    no substitute serves.
+
+    A VP8 clip encoded straight from a filter source carries an honest header and
+    fires no analysis reason at all. `-itsscale` rescales the input timestamps and
+    nothing else, so a `-c copy` of this 25 fps clip at scale 1.25 leaves 25 fps
+    in the header over packets spaced at 20 -- the same technique
+    `lying_header_mkv` uses, and the same lie the corpus VP8 sources carry.
+    """
+    root = tmp_path_factory.mktemp("lying_header_vp8")
+    source = build(root / "vp8.webm", "-c:v", "libvpx", "-pix_fmt", "yuv420p")
+    yield build(
+        root / "lying_header_vp8.webm",
+        "-c",
+        "copy",
+        source=["-itsscale", "1.25", "-i", str(source)],
+    )
