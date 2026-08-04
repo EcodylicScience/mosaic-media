@@ -284,6 +284,190 @@ def test_a_strided_read_after_a_sparse_one_reports_a_missing_slot(
     assert f"delivered {sequential} of" in str(excinfo.value)
 
 
+class _ReaderSkippingPresentationRanks(VideoReader):
+    """A reader whose decoder never emits certain presentation ranks.
+
+    The null-frame shape: the index and the facts declare more timestamps than
+    the decode produces, with the missing ones in the middle rather than at the
+    end. Distinct from `_ReaderWhoseSourceRunsOut`, which truncates -- there
+    every delivered frame still sits at its own rank, and only the total falls
+    short. Here the forward count completes on a later frame and hands it back
+    under the requested index, which no total can see.
+
+    Ranks are resolved from each frame's own presentation time rather than by
+    counting decode calls, so a seek that decodes only its own group of
+    pictures skips the same ranks a sequential decode does -- and so the same
+    fixture serves a reader holding no index, where the rank is not otherwise
+    knowable. Constant-rate sources only, which every caller here uses.
+    """
+
+    skipped_ranks: frozenset[int] = frozenset()
+
+    @override
+    def _decode_next(self) -> VideoFrame | None:
+        frame = super()._decode_next()
+        while frame is not None and self._rank_of(frame) in self.skipped_ranks:
+            frame = super()._decode_next()
+        return frame
+
+    def _rank_of(self, frame: VideoFrame) -> int:
+        return round(float(frame.time) * self.fps)
+
+
+@pytest.mark.parametrize("target", [5, 8, 20])
+def test_a_seek_onto_a_skipped_rank_raises_rather_than_returning_a_neighbor(
+    clips: dict[str, Path], target: int
+) -> None:
+    # The seek path's landing check resolves where the decoder LANDED, which is
+    # a real packet timestamp and therefore always in the index. Nothing checked
+    # the forward count that follows, so a source skipping ranks inside the
+    # group of pictures returned the frame two ranks later under the requested
+    # index -- no raise, wrong pixels. Measured before the per-frame check:
+    # seek(5) returned truth index 7, seek(8) index 10, seek(20) index 22.
+    path = clips["cfr_30fps_mp4"]
+    facts = probe_media(path)
+    index = index_for(path)
+    with _ReaderSkippingPresentationRanks(path, facts=facts, index=index) as reader:
+        reader.skipped_ranks = frozenset({2, 3})
+        reader.seek(target)
+        with pytest.raises(MediaProbeError, match=f"frame {target}:"):
+            _ok, _frame = reader.read()
+
+
+def test_every_entry_point_rejects_a_frame_the_index_does_not_place_there(
+    clips: dict[str, Path],
+) -> None:
+    # read_batch and iteration reach the same delivery through read(), and
+    # read_frames reaches it directly; a check installed on one public method
+    # rather than on the shared delivery would leave the others returning the
+    # neighboring frame.
+    path = clips["cfr_30fps_mp4"]
+    facts = probe_media(path)
+    index = index_for(path)
+    skipped = frozenset({2, 3})
+
+    def reader() -> _ReaderSkippingPresentationRanks:
+        made = _ReaderSkippingPresentationRanks(path, facts=facts, index=index)
+        made.skipped_ranks = skipped
+        return made
+
+    with reader() as sequential:
+        with pytest.raises(MediaProbeError, match="frame 2:"):
+            while True:
+                ok, _frame = sequential.read()
+                if not ok:
+                    break
+    with reader() as iterated:
+        with pytest.raises(MediaProbeError, match="frame 2:"):
+            for _index, _frame in iterated:
+                pass
+    with reader() as batched:
+        with pytest.raises(MediaProbeError, match="frame 2:"):
+            _indices, _frames = batched.read_batch(10)
+    with reader() as sparse:
+        with pytest.raises(MediaProbeError, match="frame 5:"):
+            for _index, _frame in sparse.read_frames([5, 20, 40]):
+                pass
+
+
+@pytest.mark.parametrize("frame_step", [1, 3])
+def test_a_bounded_window_over_a_skipped_rank_raises(
+    clips: dict[str, Path], frame_step: int
+) -> None:
+    # The delivery count reports a shortfall only when the window runs out
+    # early, and a bounded one does not: it ends on a frame the source still
+    # had. Measured with facts injected and no index, before the gap check:
+    # end_frame=40 delivered 40 frames, 38 of them the wrong picture, and
+    # terminated clean; at frame_step=3, 14 delivered and 13 wrong. This is the
+    # shape that proves the count insufficient, and no index is built on it.
+    path = clips["cfr_30fps_mp4"]
+    facts = probe_media(path)
+    with _ReaderSkippingPresentationRanks(
+        path, facts=facts, end_frame=40, frame_step=frame_step
+    ) as reader:
+        reader.skipped_ranks = frozenset({2, 3})
+        with pytest.raises(MediaProbeError, match="frame periods later"):
+            for _index, _frame in reader:
+                pass
+
+
+def test_the_gap_check_covers_the_reader_that_builds_no_index(
+    clips: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An index exists only when the reader was built without facts or has since
+    # seeked, so a caller injecting facts and reading forward has no index --
+    # and that is the sequential and strided read the gate measures, which must
+    # keep running no packet scan. The gap between consecutive decoded frames
+    # is what covers it, and it must raise without building one.
+    path = clips["cfr_30fps_mp4"]
+    facts = probe_media(path)
+    with count_packet_scans(reader_module, monkeypatch) as scans:
+        with _ReaderSkippingPresentationRanks(path, facts=facts) as reader:
+            reader.skipped_ranks = frozenset({2, 3})
+            with pytest.raises(MediaProbeError, match="frame periods later"):
+                for _index, _frame in reader:
+                    pass
+        assert scans() == 0
+
+
+def test_a_variable_rate_source_is_exempt_from_the_gap_check(
+    corpus_vfr: Path,
+) -> None:
+    # A gap wider than one period is the normal case on a variable-rate source
+    # -- measured at 2.2 periods on this fixture, above the 1.5 the check
+    # raises at -- so the gap carries no signal there and the check is gated on
+    # measured constant timing. Reading with facts injected and no seek is the
+    # configuration where the gap check is the active one.
+    facts = probe_media(corpus_vfr)
+    assert not facts.constant_frame_rate
+    with VideoReader(corpus_vfr, facts=facts) as reader:
+        delivered = sum(1 for _index, _frame in reader)
+    assert delivered == facts.frame_count
+
+
+def test_the_delivery_check_stays_silent_across_a_healthy_source(
+    clips: dict[str, Path], open_gop_clip: Path, corpus_vfr: Path
+) -> None:
+    # The clause neither check may break: a reader must never fail on a source
+    # that is fine. Offsets, bounds and strides move the target sequence, a seek
+    # and a sparse read move the count origin, and an open-GOP and a genuinely
+    # variable-rate source are where a landing legitimately resolves to a rank
+    # the seek did not name. Both mechanisms are exercised, because an offset
+    # start builds an index and a start at zero does not. None may raise, and
+    # each window must deliver its full grid.
+    for path in (clips["cfr_30fps_mp4"], open_gop_clip, corpus_vfr):
+        facts = probe_media(path)
+        for start_frame in (0, 1, 7):
+            for end_frame in (None, 1, 7, 40):
+                for frame_step in (1, 2, 3, 5, 7):
+                    with VideoReader(
+                        path,
+                        facts=facts,
+                        start_frame=start_frame,
+                        end_frame=end_frame,
+                        frame_step=frame_step,
+                    ) as reader:
+                        delivered = sum(1 for _index, _frame in reader)
+                    window_end = (
+                        facts.frame_count
+                        if end_frame is None
+                        else min(end_frame, facts.frame_count)
+                    )
+                    expected = len(
+                        range(min(start_frame, window_end), window_end, frame_step)
+                    )
+                    shape = f"{start_frame}/{end_frame}/{frame_step}"
+                    assert delivered == expected, f"{path.name} {shape}"
+        targets = [0, 1, facts.frame_count // 2, facts.frame_count - 1]
+        with VideoReader(path, facts=facts) as reader:
+            for target in targets:
+                reader.seek(target)
+                ok, frame = reader.read()
+                assert ok and frame is not None, f"{path.name} seek {target}"
+        with VideoReader(path, facts=facts) as reader:
+            assert [index for index, _frame in reader.read_frames(targets)] == targets
+
+
 def test_a_seek_restarts_the_delivery_count(clips: dict[str, Path]) -> None:
     # Reading before the seek is what distinguishes this from the test above:
     # deliveries carried across the seek would satisfy the post-seek

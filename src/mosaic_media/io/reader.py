@@ -82,6 +82,14 @@ class VideoReader:
     `read_batch` cannot mistake a short delivery for a clean end. A `seek`
     restarts the count, which is then measured from the seek target.
 
+    A source whose packets do not all decode raises rather than handing back
+    the frame the forward count happened to land on, which the count itself
+    cannot see: it completes. Where an index is available each delivered frame
+    is checked against the entry for the index it is returned under; where one
+    is not, consecutive decoded frames of a constant-rate source are checked
+    for the gap a missing frame leaves. Neither builds an index, so injecting
+    facts and reading forward still runs no packet scan.
+
     Every array returned by this reader -- from `read`, `read_batch`,
     `read_frames`, or iteration -- is writable, C-contiguous, and never aliases
     another returned array, so a caller may draw onto one without affecting
@@ -150,6 +158,9 @@ class VideoReader:
         self._last_index: int = 0  # index of the most recently returned frame
         self._delivered: int = 0
         self._count_origin: int = 0  # frame index the delivery count starts at
+        # The previous frame emitted in the current decode segment, for the
+        # consecutive-gap check. None at the start of a segment.
+        self._previous_decoded_time: float | None = None
 
     # --- Container lifecycle ---
 
@@ -479,6 +490,11 @@ class VideoReader:
         self._decode_iterator = container.decode(stream)
         self._decoder_pos = keyframe_index
         self._pending_frame = None
+        # A new decode segment: the frame about to be decoded has no predecessor
+        # in it, and the gap to whatever the previous segment last emitted is a
+        # seek, not a missing frame. Set after the reuse return above, which
+        # continues the live segment rather than starting one.
+        self._previous_decoded_time = None
         # A landing at or before the requested keyframe is legitimate:
         # container seek granularity is coarser than the keyframe list on some
         # formats, so the decoder can land on an earlier picture than the
@@ -537,16 +553,153 @@ class VideoReader:
         )
         raise MediaProbeError(message)
 
+    def _verify_delivery(self, geometry: _Geometry, frame: VideoFrame) -> None:
+        """Raise unless `frame` is the one `self._target` names.
+
+        `_read_current` reaches its target by counting decoded frames, which
+        assumes every decode advances exactly one presentation rank. A source
+        carrying packets that decode to no frame breaks that assumption without
+        breaking the count: the loop still completes, and it completes on a
+        later frame, which is then returned under the requested index. Nothing
+        upstream catches it. The seek path's only other backstop resolves the
+        *landing*, which is a real packet timestamp and therefore always in the
+        index, and the delivery count sees a shortfall only once the window
+        runs out -- after the wrong frames have been handed back.
+
+        The frame's own presentation time against the index entry for
+        `self._target` is what separates the two cases, and it is the whole
+        mechanism. The reader holds no verdict and must not acquire one: policy
+        is injected here, `MediaFacts` carries no verdict, and `derive` needs a
+        profile and thresholds this class never receives.
+
+        `self._target` is an absolute source frame index on every path that
+        reaches here -- `read` walks it from `_start_frame` by `_frame_step`,
+        `seek` assigns it outright, and `read_frames` seeks per target -- and
+        the index is in absolute source ranks too, so the entry is
+        `frame_times[self._target]`. `_start_frame`, `_frame_step` and
+        `_count_origin` choose which targets are visited and where the delivery
+        count starts; none of them shifts this mapping.
+
+        Skipped wherever there is nothing to compare against, because firing on
+        a healthy source would be a worse defect than the one this catches:
+
+        - No index. Building one here would put a packet scan on the injected
+          facts sequential and strided reads, which are pinned at zero scans
+          because the performance gate measures them. `_check_decode_gap`
+          covers that region instead, from the decoded timestamps alone.
+        - No measured frame rate, so no frame period to size a tolerance with.
+          A stream whose packets carry no timestamps has none, and its frame
+          times are placeholders. `_position_at`'s landing check is guarded the
+          same way.
+        - A target past the end of the index, which offers no entry to compare
+          against. The two scanners can disagree on a stream where libavformat
+          synthesizes timestamps ffprobe reports as absent, so the declared
+          frame count and the index length are not guaranteed equal even though
+          they are equal on every source measured here.
+
+        The tolerance is half a frame period, as it is for the landing check: a
+        frame one period away is a different frame, and the two scanners agree
+        exactly on a source whose index and decode share a timestamp space, so
+        the margin is never carrying float noise.
+        """
+        index = self._index
+        if index is None or geometry.fps <= 0:
+            return
+        if self._target >= len(index.frame_times):
+            return
+        observed = float(frame.time)
+        expected = index.frame_times[self._target]
+        if abs(observed - expected) <= 0.5 / geometry.fps:
+            return
+        message = (
+            f"{self._path} frame {self._target}: its seek index places that "
+            f"frame at {expected} but the decoder delivered one at {observed}; "
+            "the source carries packets that decode to no frame, so counting "
+            "forward runs past the requested frame, and it must be transcoded "
+            "before it can be read per frame"
+        )
+        raise MediaProbeError(message)
+
+    def _check_decode_gap(self, geometry: _Geometry, frame: VideoFrame) -> None:
+        """Raise when consecutive decoded frames sit further apart than one
+        frame period, which is a frame the decoder did not produce.
+
+        The half of the delivery contract `_verify_delivery` cannot reach.
+        These two never both run: this one is gated on there being no index,
+        because an index makes `_verify_delivery` available and that check is
+        strictly stronger -- it compares each delivered frame against the entry
+        for its own index, so it catches a mislabel wherever it happens rather
+        than inferring one from a spacing. This check exists because building
+        an index costs a packet scan the injected-facts sequential and strided
+        reads must not pay, and those reads are otherwise covered by nothing:
+        an index exists only when the reader was constructed without facts or
+        has since seeked, so a caller that injects facts and only reads forward
+        has neither check without this one.
+
+        `end_frame` is why the delivery count is not enough on its own. That
+        count reports a shortfall when a window runs out early, and a bounded
+        window does not: measured on a source missing two frames,
+        `end_frame=40` delivered 40 frames, 38 of them the wrong picture, and
+        ended clean.
+
+        Restricted to a source whose facts measured constant timing, because
+        the whole signal is that a gap wider than one period is anomalous, and
+        on a variable-rate source it is the normal case -- measured at 2.2
+        periods on a 30 fps recording with a 10 fps stretch. A variable-rate
+        source is exempt rather than approximated. That costs no coverage on
+        the shape this exists for: a file whose packets do not all decode is
+        not thereby variable-rate, and the recorded null-frame source measures
+        constant across all of its packets.
+
+        The threshold is 1.5 periods: consecutive frames sit exactly one period
+        apart on every constant-rate source measured, in every window shape,
+        and a single missing frame puts them two apart. Half a period of margin
+        either way, the same margin the landing and index checks carry.
+        """
+        facts = self._facts
+        if self._index is not None or facts is None:
+            return
+        if not facts.constant_frame_rate or geometry.fps <= 0:
+            return
+        # Read after those two gates, never before. A frame carries no time
+        # when its packet carried none, and `av` types that as a float it does
+        # not always hold; the sources it happens on are exactly the ones a
+        # measured constant rate and a positive frame rate exclude, so the
+        # gates above are what make this read safe.
+        observed = float(frame.time)
+        previous = self._previous_decoded_time
+        self._previous_decoded_time = observed
+        if previous is None:
+            return
+        gap = (observed - previous) * geometry.fps
+        if gap <= 1.5:
+            return
+        message = (
+            f"{self._path} decoded a frame at {observed} directly after one at "
+            f"{previous}, {gap:.2f} frame periods later; the source carries "
+            "packets that decode to no frame, so the frames between them are "
+            "missing and every later index is mislabeled. It must be "
+            "transcoded before it can be read per frame"
+        )
+        raise MediaProbeError(message)
+
     def _read_current(self, geometry: _Geometry) -> numpy.ndarray | None:
         """Decode forward to `self._target` and return that frame, advancing the
         decoder position. None at end of stream."""
         while self._decoder_pos < self._target:
-            if self._decode_next() is None:
+            skipped = self._decode_next()
+            if skipped is None:
                 return None
+            # Checked on the discarded frames too: a stride steps over the gap,
+            # so a check that saw only delivered frames would measure the
+            # stride rather than the spacing.
+            self._check_decode_gap(geometry, skipped)
             self._decoder_pos += 1
         frame = self._decode_next()
         if frame is None:
             return None
+        self._check_decode_gap(geometry, frame)
+        self._verify_delivery(geometry, frame)
         self._decoder_pos += 1
         return self._emit(geometry, frame)
 
@@ -592,6 +745,7 @@ class VideoReader:
             self._apply_show_all(stream, at_stream_start=True)
             self._decode_iterator = container.decode(stream)
             self._decoder_pos = 0
+            self._previous_decoded_time = None
 
     def read_batch(self, batch_size: int) -> tuple[numpy.ndarray, numpy.ndarray]:
         geometry = self._ensure_ready()

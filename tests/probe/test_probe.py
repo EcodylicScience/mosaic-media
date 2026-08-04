@@ -65,3 +65,28 @@ def test_a_source_cut_mid_stream_counts_its_leading_frames(
     facts = probe_media(avi_starting_on_non_keyframes)
     assert facts.leading_non_keyframe_frames == 24
     assert facts.discard_flagged_packets == 0
+
+
+def test_an_untimed_source_cut_mid_stream_counts_its_leading_frames(
+    raw_starting_on_non_keyframes: Path,
+) -> None:
+    # Every packet of a raw elementary stream carries the same placeholder
+    # timestamp, so counting distinct timestamps below the first keyframe time
+    # returns 0 for every file of the class however many frames precede it.
+    # Packet order carries the signal instead. The same cut as the AVI above,
+    # so the same 24.
+    facts = probe_media(raw_starting_on_non_keyframes)
+    assert not facts.timing_measured
+    assert facts.leading_non_keyframe_frames == 24
+    assert facts.frame_count == 49
+
+
+def test_an_untimed_source_opening_on_a_keyframe_still_counts_none(
+    clips: dict[str, Path],
+) -> None:
+    # The counting order changed for this whole class, so the committed raw
+    # streams are what say the change is confined to the shape it was made for.
+    for name in ("raw_h264", "raw_fractional_rate_h264"):
+        facts = probe_media(clips[name])
+        assert not facts.timing_measured
+        assert facts.leading_non_keyframe_frames == 0, name

@@ -4,15 +4,23 @@ from pathlib import Path
 
 from .boxes import moov_at_start
 from .facts import MediaFacts
-from .ffprobe import Packet, prober_version, read_header, scan_packets
+from .ffprobe import (
+    Packet,
+    TimestampSource,
+    prober_version,
+    read_header,
+    scan_packets,
+)
 from .gop import measure_gop
 from .identity import IDENTITY_SCHEME, mint_identity
 from .policy import DEFAULT_THRESHOLDS, Thresholds
 from .timing import measure_timing
 
 
-def _leading_non_keyframe_frames(packets: tuple[Packet, ...]) -> int:
-    """Frames preceding the first keyframe, in presentation order.
+def _leading_non_keyframe_frames(
+    packets: tuple[Packet, ...], source: TimestampSource
+) -> int:
+    """Frames preceding the first keyframe.
 
     A frame is a distinct presentation timestamp, the unit frame_count uses, so
     a container carrying several packets at one timestamp contributes one. A
@@ -20,10 +28,21 @@ def _leading_non_keyframe_frames(packets: tuple[Packet, ...]) -> int:
     is keyframe-flagged, matching build_seek_index, so this count and the index's
     keyframe ranks cannot disagree.
 
-    Zero for a stream with no keyframe flags, which decodes from its first
-    packet, and zero for a timestampless stream, whose packets all carry the 0.0
-    placeholder and therefore have no presentation order to count in.
+    A stream whose packets carry no timestamps is counted in packet order
+    instead. Every such packet holds the same 0.0 placeholder, so a comparison
+    of timestamps returns 0 no matter how many frames precede the first
+    keyframe -- structurally, for every file of that class. Packet order is the
+    only order such a stream has, and it carries the signal: one access unit per
+    frame, delivered in the order the bitstream states them.
+
+    Zero for a stream with no keyframe flags at all, in either counting order:
+    it decodes from its first packet, so nothing precedes a keyframe.
     """
+    if source == "none":
+        for position, packet in enumerate(packets):
+            if packet.keyframe:
+                return position
+        return 0
     keyframe_times = {packet.time for packet in packets if packet.keyframe}
     if not keyframe_times:
         return 0
@@ -96,7 +115,7 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
         max_keyframe_interval_frames=gop.max_keyframe_interval_frames,
         max_gop_bytes=gop.max_gop_bytes,
         discard_flagged_packets=sum(1 for packet in packets if packet.discard),
-        leading_non_keyframe_frames=_leading_non_keyframe_frames(packets),
+        leading_non_keyframe_frames=_leading_non_keyframe_frames(packets, source),
         timing_measured=timing_measured,
         video_uuid=identity.video_uuid,
         content_digest=identity.content_digest,

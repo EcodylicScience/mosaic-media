@@ -63,10 +63,13 @@ class MediaFacts:
     so a container carrying several packets at one timestamp contributes one,
     and the count cannot disagree with the seek index's keyframe ranks.
 
-    `leading_non_keyframe_frames` is 0 for a stream whose packets carry no
-    timestamps. Such a stream has no presentation order to count in, and its
-    verdict routes it to a timestamp-generating remux through
-    `unreliable_timing_metadata` regardless.
+    `leading_non_keyframe_frames` counts such a stream in packet order, which
+    is the only order it has: its packets all carry one placeholder timestamp,
+    so counting distinct timestamps below the first keyframe returns 0 for
+    every file of the class, however many frames precede that keyframe. The
+    count has to be real there, because the remux the verdict already routes
+    such a stream to through `unreliable_timing_metadata` is a stream copy, and
+    a copy drops exactly the frames this counts.
     """
 
     container: str

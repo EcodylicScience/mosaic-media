@@ -266,6 +266,37 @@ def avi_starting_on_non_keyframes(
 
 
 @pytest.fixture(scope="session")
+def raw_starting_on_non_keyframes(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[Path]:
+    """A raw H.264 elementary stream whose first frames precede its keyframe.
+
+    The two shapes that lose frames to a copy remux, in one file: no packet
+    timestamps at all, and 24 non-keyframes ahead of the keyframe at 25. A
+    tracking box writing a bare bitstream and starting its recording mid-stream
+    produces exactly this.
+
+    Built by concatenating the committed AVI's packet payloads from index 1 --
+    the same cut `avi_starting_on_non_keyframes` makes, written without a
+    container so the stream carries no timing of its own. Remuxing the AVI into
+    a raw stream with ffmpeg would not produce it: that path drops the leading
+    non-keyframes, which is the behavior under test.
+    """
+    root = tmp_path_factory.mktemp("headless_raw")
+    source = asset("h264.avi", root / "h264.avi")
+    destination = root / "starts_on_non_keyframes.h264"
+    payload = bytearray()
+    with av.open(str(source)) as input_container:
+        input_stream = input_container.streams.video[0]
+        for position, packet in enumerate(input_container.demux(input_stream)):
+            if packet.size == 0 or position == 0:
+                continue
+            payload += bytes(packet)
+    _ = destination.write_bytes(bytes(payload))
+    yield destination
+
+
+@pytest.fixture(scope="session")
 def vp8_webm_clip(clips: dict[str, Path]) -> Path:
     return clips["vp8_webm"]
 

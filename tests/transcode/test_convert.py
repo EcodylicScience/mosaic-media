@@ -492,6 +492,49 @@ def test_raw_h264_remuxes_into_measured_timing(
     assert result.output_verdict.analysis_transcode is None
 
 
+@requires_svtav1
+def test_an_untimed_source_cut_mid_stream_re_encodes_and_keeps_every_frame(
+    raw_starting_on_non_keyframes: Path, tmp_path: Path
+) -> None:
+    # The remux above is a stream copy, and a copy drops the frames ahead of the
+    # first keyframe. Measured on this source while its leading count read 0:
+    # the analysis derivative came back with 25 frames of the source's 49, down
+    # the same copy path the deliverability escalation exists to prevent. The
+    # escalation only ever fired for a timed source, because the count it reads
+    # was structurally 0 for every untimed one.
+    source_facts = probe_media(raw_starting_on_non_keyframes)
+    assert source_facts.timing_measured is False
+    assert source_facts.leading_non_keyframe_frames == 24
+    result = transcode(
+        raw_starting_on_non_keyframes,
+        tmp_path / "out.mp4",
+        "analysis",
+        ANALYSIS_ENCODING,
+    )
+    assert result.performed
+    assert result.operation is Operation.REENCODE_AV1
+    assert result.output_facts is not None
+    assert result.output_facts.frame_count == source_facts.frame_count == 49
+    # The derivative is what analysis reads, so it must carry no leading frames
+    # of its own and need no further transcode.
+    assert result.output_facts.leading_non_keyframe_frames == 0
+    assert result.output_verdict is not None
+    assert result.output_verdict.analysis_transcode is None
+
+
+def test_the_reader_delivers_an_untimed_mid_stream_cut_without_a_transcode(
+    raw_starting_on_non_keyframes: Path,
+) -> None:
+    # The counting change moves the transcode decision, not the reader: the
+    # reader emits the leading frames because it sets the decoder flag when a
+    # segment begins at the start of the stream, which it derives structurally
+    # rather than from this count.
+    facts = probe_media(raw_starting_on_non_keyframes)
+    with VideoReader(raw_starting_on_non_keyframes, facts=facts) as reader:
+        delivered = sum(1 for _index, _frame in reader)
+    assert delivered == facts.frame_count == 49
+
+
 def test_a_still_red_playback_output_is_a_terminal_failure(
     clips: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
