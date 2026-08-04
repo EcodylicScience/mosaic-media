@@ -18,7 +18,12 @@ from mosaic_media.probe.errors import MediaProbeError
 from mosaic_media.probe.policy import CHROME_149, DEFAULT_THRESHOLDS
 from mosaic_media.probe.probe import probe_media
 from mosaic_media.probe.verdict import derive
-from tests.helpers.media_fixtures import QUANTIZED_RATES
+from tests.helpers.corpus import decode_md5s, frame_md5
+from tests.helpers.media_fixtures import (
+    QUANTIZED_RATES,
+    requires_av1_frame_split,
+    requires_svtav1,
+)
 from tests.helpers.indexes import index_for
 from tests.helpers.scans import count_packet_scans
 
@@ -617,6 +622,80 @@ def test_an_untimed_source_carries_no_frame_rate_to_reach_the_spacing_guard(
         assert facts.fps == 0.0
         with VideoReader(path, facts=facts) as reader:
             assert sum(1 for _index, _frame in reader) == facts.frame_count
+
+
+@requires_svtav1
+@requires_av1_frame_split
+def test_a_source_declaring_more_frames_than_it_decodes_raises(
+    av1_split_clips: dict[str, Path],
+) -> None:
+    # The shape both delivery checks exist for, as a file rather than a
+    # subclass: a bare AV1 stream whose hidden frames each took a synthesized
+    # timestamp, so the frame model declares 74 frames over 50 pictures. A
+    # subclass cannot pin this half of it -- it stands in for the decoder and so
+    # begins after the probe, while what makes this source dangerous is that
+    # the probe finds nothing wrong with it. Both reader paths raise, on
+    # different mechanisms: with facts and no index the spacing between decoded
+    # frames, without facts the index entry for the frame being returned.
+    path = av1_split_clips["obu"]
+    facts = probe_media(path)
+    pictures = decode_md5s(path)
+    assert facts.frame_count > len(pictures)
+    assert facts.constant_frame_rate
+    assert facts.max_timestamp_gap_frame_periods == pytest.approx(1.0)
+    assert facts.discard_flagged_packets == 0
+    assert facts.leading_non_keyframe_frames == 0
+    assert derive(facts, CHROME_149, DEFAULT_THRESHOLDS).analysis_transcode is None
+    for label, reader in (
+        ("frame periods later", VideoReader(path, facts=facts)),
+        ("frame 1:", VideoReader(path)),
+    ):
+        delivered: list[str] = []
+        with reader:
+            with pytest.raises(MediaProbeError, match=label):
+                for _index, frame in reader:
+                    delivered.append(frame_md5(frame))
+        # It raised rather than handing back a picture belonging elsewhere:
+        # everything delivered up to the raise is the frame its index names.
+        assert delivered == pictures[: len(delivered)]
+        assert len(delivered) < facts.frame_count
+
+
+@requires_svtav1
+@requires_av1_frame_split
+def test_a_source_whose_hidden_frames_share_a_timestamp_reads_clean(
+    av1_split_clips: dict[str, Path],
+) -> None:
+    # The same encode, split the same way, written to a container that gives
+    # each hidden frame the timestamp of the visible frame it belongs to. The
+    # frame model counts distinct timestamps, so 74 packets over 50 timestamps
+    # declare 50 frames, and the decoder produces exactly those 50. This file is
+    # healthy and every read of it must stay clean.
+    #
+    # It is also the reason a check comparing packet count against distinct
+    # timestamp count cannot be the answer. This file carries more packets than
+    # timestamps and is sound; its sibling carries one packet per timestamp and
+    # is broken. On the only measured instances of the shape, that comparison
+    # points at the healthy file and away from the defective one.
+    path = av1_split_clips["matroska"]
+    facts = probe_media(path)
+    packets, _source = scan_packets_in_process(path)
+    assert len(packets) > len({packet.time for packet in packets})
+    assert facts.frame_count == len({packet.time for packet in packets})
+    assert facts.constant_frame_rate
+    assert derive(facts, CHROME_149, DEFAULT_THRESHOLDS).analysis_transcode is None
+    pictures = decode_md5s(path)
+    assert len(pictures) == facts.frame_count
+    for reader in (VideoReader(path, facts=facts), VideoReader(path)):
+        with reader:
+            assert [frame_md5(frame) for _index, frame in reader] == pictures
+    with VideoReader(path, facts=facts) as reader:
+        for target in (0, 1, 7, 12, 24, 25, 33, facts.frame_count - 1):
+            reader.seek(target)
+            ok, frame = reader.read()
+            assert ok
+            assert frame is not None
+            assert frame_md5(frame) == pictures[target]
 
 
 def test_the_delivery_check_stays_silent_across_a_healthy_source(

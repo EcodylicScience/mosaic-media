@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy
 import pytest
 
-from mosaic_media import hwaccel
 from mosaic_media.io.reader import VideoReader
 from mosaic_media.probe.errors import MediaProbeError
 from mosaic_media.probe.facts import MediaFacts
@@ -27,17 +26,7 @@ from mosaic_media.transcode import (
     run_transcode,
 )
 from mosaic_media.transcode import convert as convert_module
-from tests.helpers.media_fixtures import build
-
-# libsvtav1 is a system-ffmpeg build option; skip the re-encode acceptance tests
-# with an actionable message when it is absent. The copy-remux tests do not need it.
-requires_svtav1 = pytest.mark.skipif(
-    not hwaccel.encoder_available("libsvtav1"),
-    reason=(
-        "libsvtav1 encoder missing from system ffmpeg; install an ffmpeg built "
-        "with --enable-libsvtav1 to run the AV1 re-encode acceptance tests"
-    ),
-)
+from tests.helpers.media_fixtures import build, requires_svtav1
 
 
 def _audio_codec(path: Path) -> str:

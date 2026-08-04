@@ -327,9 +327,8 @@ def test_a_segment_with_an_edit_list_delivers_every_frame(
     # implements no iteration protocol, and its read() returns (ok, frame) rather
     # than the (index, frame) pair VideoReader.__iter__ yields.
     #
-    # Green before this task and after. A sequential read never reaches the
-    # provenance check -- which is precisely why the test above seeks -- so this
-    # pins delivery, not the gate.
+    # A sequential read never reaches the provenance check -- which is precisely
+    # why the test above seeks -- so this pins delivery, not the gate.
     paths = [preroll_mp4, clips["cfr_mp4"]]
     facts = [probe_media(path) for path in paths]
     delivered = 0

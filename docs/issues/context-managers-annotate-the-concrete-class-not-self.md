@@ -43,8 +43,8 @@ alone or restored to `with` when this is fixed.
 
 ## Why deferred
 
-It surfaced during a task whose subject is frame delivery, and whose diff is
-already the largest in its plan. Context-manager annotations have nothing to do
+It surfaced inside a change whose subject is frame delivery, already the largest
+of its work package. Context-manager annotations have nothing to do
 with that contract, and this repository's conventions permit relaxing a
 do-not-touch boundary only narrowly, for exactly the wiring a change needs. The
 `try`/`finally` works, so the change did not need it.

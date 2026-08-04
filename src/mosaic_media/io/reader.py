@@ -202,10 +202,10 @@ class VideoReader:
             if self._ignore_edit_list:
                 # A source decoded with the edit list ignored must be indexed
                 # in that same space, so the container-default scan just paid
-                # cannot be reused. Inside this branch,
-                # not beside the space assignment above: its packets feed
-                # nothing but the index, so a caller who brought one would pay
-                # a whole second demux for a tuple that is discarded.
+                # cannot be reused. The re-scan sits inside this branch, not
+                # beside the space assignment above: its packets feed nothing
+                # but the index, so a caller who brought one would pay a whole
+                # second demux for a tuple that is discarded.
                 packets, _source = scan_packets_in_process(
                     self._path, ignore_edit_list=True
                 )

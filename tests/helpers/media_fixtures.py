@@ -3,7 +3,11 @@ built with PyAV.
 
 ffmpeg is a documented system dependency, so a missing encoder is a failure,
 not a skip. The encoders used here are the ones an LGPL build carries: libvpx,
-mjpeg, aac, and the native `-c copy` remuxes.
+mjpeg, aac, libsvtav1, and the native `-c copy` remuxes.
+
+libsvtav1 and the `av1_frame_split` bitstream filter are build options rather
+than guaranteed members of that set, so the fixture needing them is reached
+only through the markers below.
 
 H.264 and HEVC clips are copied from `tests/assets/` rather than encoded.
 Their decoders are native and LGPL, so a committed clip costs nothing to
@@ -23,6 +27,8 @@ from typing import Literal
 
 import av
 import pytest
+
+from mosaic_media import hwaccel
 
 SOURCE = ["-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=2"]
 ASSETS = Path(__file__).parent.parent / "assets"
@@ -52,6 +58,44 @@ def asset(name: AssetName, destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     _ = shutil.copyfile(source, destination)
     return destination
+
+
+def bitstream_filter_available(name: str) -> bool:
+    """True when the ffmpeg on PATH lists `name` among its bitstream filters.
+
+    The companion to `hwaccel.encoder_available`, which answers the same
+    question for encoders. It lives here rather than beside that function
+    because nothing this package ships applies a bitstream filter; only fixture
+    construction does.
+
+    Matched against whitespace-separated tokens rather than by substring, so a
+    filter whose name contains another's does not answer for it.
+    """
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-bsfs"], capture_output=True, text=True, timeout=120
+    )
+    return result.returncode == 0 and name in result.stdout.split()
+
+
+# Both are system-ffmpeg build options. Skip with an actionable message when
+# either is absent rather than failing, as the rest of this module would.
+requires_svtav1 = pytest.mark.skipif(
+    not hwaccel.encoder_available("libsvtav1"),
+    reason=(
+        "libsvtav1 encoder missing from system ffmpeg; install an ffmpeg built "
+        "with --enable-libsvtav1 to run the AV1 re-encode acceptance tests"
+    ),
+)
+
+requires_av1_frame_split = pytest.mark.skipif(
+    not bitstream_filter_available("av1_frame_split"),
+    reason=(
+        "av1_frame_split bitstream filter missing from system ffmpeg; it is "
+        "what separates an AV1 temporal unit into its constituent frames, and "
+        "no other route builds a source that declares more frames than it "
+        "decodes"
+    ),
+)
 
 
 def build(destination: Path, *arguments: str, source: list[str] | None = None) -> Path:
@@ -395,6 +439,50 @@ def raw_starting_on_non_keyframes(
             payload += bytes(packet)
     _ = destination.write_bytes(bytes(payload))
     yield destination
+
+
+@pytest.fixture(scope="session")
+def av1_split_clips(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
+    """One AV1 encode split into its constituent frames, muxed two ways.
+
+    An AV1 temporal unit carries a hidden frame -- an alternate reference the
+    encoder stores for later prediction and never displays -- alongside the
+    visible one. `av1_frame_split` separates the unit, so each becomes its own
+    packet: 50 visible frames become 74 packets. What that means for the frame
+    model is decided entirely by the container the packets are then written to,
+    which is why one encode produces both fixtures and they differ in nothing
+    else.
+
+    `matroska` gives the hidden frame the timestamp of the visible one it
+    belongs to, so 74 packets carry 50 distinct timestamps. The frame model
+    counts distinct timestamps, the decoder emits 50 pictures, and the two
+    agree: this file is healthy, and reading or seeking it must stay clean.
+
+    `obu` is a bare stream with no timestamps of its own, so the demultiplexer
+    synthesizes one per packet from the frame rate: 74 packets, 74 distinct
+    timestamps, still 50 pictures. The frame model now declares 74 frames the
+    decoder cannot produce, and every index past the first hidden frame names a
+    picture that is not there.
+
+    Both probe analysis-clean -- constant rate, no analysis reason, no discard
+    flags, no leading non-keyframes, and neighboring timestamps exactly one
+    frame period apart -- which is what makes the pair worth generating. The
+    defect is invisible to every measurement the probe takes and appears only
+    in a decode.
+    """
+    root = tmp_path_factory.mktemp("av1_split")
+    encoded = build(root / "av1.mp4", "-c:v", "libsvtav1", "-pix_fmt", "yuv420p")
+    made: dict[str, Path] = {}
+    for key, name in (("matroska", "split.mkv"), ("obu", "split.obu")):
+        made[key] = build(
+            root / name,
+            "-c",
+            "copy",
+            "-bsf:v",
+            "av1_frame_split",
+            source=["-i", str(encoded)],
+        )
+    return made
 
 
 @pytest.fixture(scope="session")

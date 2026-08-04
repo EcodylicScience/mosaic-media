@@ -192,6 +192,6 @@ def assert_gate(result: BenchResult, *, threshold: float = 1.0) -> None:
         f"cv2 median {result.cv2_median * 1000:.1f} ms, "
         f"reader median {result.reader_median * 1000:.1f} ms, "
         f"ratio {result.ratio:.3f} < {threshold:.2f}. "
-        "STOP: report these numbers to the reviewer; do not tune the threshold."
+        "STOP: these numbers are the result; do not tune the threshold to clear them."
     )
     assert result.ratio >= threshold, message

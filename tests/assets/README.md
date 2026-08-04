@@ -92,8 +92,7 @@ ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=30:duration=2.6" \
 # measurements, so every member of both shipped sets is measured rather than
 # assumed: the trusted-codec delivery test, and the mp4 carriage test that muxes
 # it with `-c copy`. hvc1 tagging is what players and browsers expect in mp4.
-# This clip has no pre-existing fixture recipe; it was written for those tests,
-# and removing either one does not make it unused.
+# This clip exists only for those tests, and neither alone justifies removing it.
 ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=2" \
     -c:v libx265 -pix_fmt yuv420p -g 25 -tag:v hvc1 $Q hevc.mp4
 
@@ -106,7 +105,7 @@ ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=2" \
 # presentation-order keyframe resolution lands frame-exact where a naive seek to
 # the nearest keyframe does not. scenecut=0 keeps the GOP boundaries where -g
 # puts them, so the structure is deterministic rather than content-dependent.
-# This clip has no pre-existing fixture recipe; it was written for those tests.
+# This clip exists only for those tests, and neither alone justifies removing it.
 ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=2" \
     -c:v libx264 -pix_fmt yuv420p -g 12 -bf 2 -x264-params open-gop=1:scenecut=0 \
     $Q open_gop.mp4

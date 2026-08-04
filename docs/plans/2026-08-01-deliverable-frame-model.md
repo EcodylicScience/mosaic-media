@@ -504,8 +504,8 @@ update all of them.
 
 In `src/` the sites are inside `_ensure_index` and `MultiVideoReader`'s
 per-segment index build. Pass `source="in_process"`. For the space, pass
-`space="container_default"` in both for now; Task 3 supplies the reader's real
-value and Task 8 supplies the multi reader's.
+`space="container_default"` in both. It is a placeholder there: Task 3 supplies
+the reader's real value and Task 8 supplies the multi reader's.
 
 Every remaining site is in tests, and one file carries two of them -- a
 `build_seek_index(...)` whose result feeds a direct `SeekIndex(...)` on the next
