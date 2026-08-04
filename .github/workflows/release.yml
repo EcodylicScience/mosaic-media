@@ -1,0 +1,57 @@
+name: Release
+
+# Publishes to PyPI on a version tag, and nothing else -- there is no test job
+# in this repository, so a tag publishes ungated. Run `uv run pytest -q` and
+# `uv build` locally before tagging.
+#
+# `uv publish` authenticates by OpenID Connect against a PyPI trusted
+# publisher, so no API token is stored as a secret. That requires
+# `id-token: write` below, a publisher registered on pypi.org naming this
+# repository and this workflow file, and the `pypi` environment to exist.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # OIDC, for PyPI trusted publishing
+      contents: write # to create the GitHub release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # The tag is the release, so it must agree with the version the build
+      # reads from pyproject.toml. Catching a mismatch here costs a re-tag;
+      # catching it after the upload costs a yanked release, because PyPI
+      # never lets a version be replaced.
+      - name: Check the tag matches the packaged version
+        run: |
+          packaged=$(uv version --short)
+          tagged="${GITHUB_REF_NAME#v}"
+          if [ "$packaged" != "$tagged" ]; then
+            echo "tag $GITHUB_REF_NAME declares $tagged, pyproject.toml says $packaged" >&2
+            exit 1
+          fi
+
+      - run: uv build
+
+      - run: uv publish
+
+      # Makes the README's "release notes are on the repository's releases
+      # page" true. `gh` is on the runner image, so this needs no third-party
+      # action.
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Named suffixes rather than `dist/*`: uv build drops a .gitignore in
+        # there, which is not a release asset.
+        run: |
+          gh release create "$GITHUB_REF_NAME" --generate-notes \
+            dist/*.whl dist/*.tar.gz
