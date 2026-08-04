@@ -6,9 +6,10 @@ injects `facts`, a sequence parallel to the paths: consumers hold MediaFacts
 from ingestion and measurement is never re-derived, so an injected open pays
 no ffprobe subprocess. `indices` likewise injects per-segment seek indices;
 segments without one build it from an in-process packet scan on first use, run
-in that segment's own timestamp space -- gated when the segment's facts report
-discard-flagged packets, ungated otherwise -- because the per-segment reader
-decodes in the same space and rejects an index built in the other one. An
+in that segment's own timestamp space -- with the edit list ignored when the
+segment's facts report discard-flagged packets, and in the container-default
+space otherwise -- because the per-segment reader decodes in the same space and
+rejects an index built in the other one. An
 injected index is subject to that same check, and a caller can tell which space
 a segment needs from `discard_flagged_packets` on the facts it already holds.
 Uniformity across the sequence is validated with the probe's

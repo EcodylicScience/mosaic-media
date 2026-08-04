@@ -22,7 +22,8 @@ demultiplexed either way, 5 of them flagged, 45 frames decoded by default and
 The option clears the marks, and it also moves the timestamps themselves,
 because the edit list's shift is applied at demultiplex time. Either way the
 consequence is the same: a source carrying the flag must have its index built
-in the space its decode runs in, so both are gated or neither is.
+in the space its decode runs in, so both ignore the edit list or neither
+does.
 """
 
 from pathlib import Path

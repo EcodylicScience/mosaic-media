@@ -7,10 +7,11 @@ reporting how many frames it delivered against how many the facts declare. A
 preceding sparse read makes that number too low.
 
 `read_frames` calls `seek` for each target, and `seek` zeroes `_delivered` and
-moves `_count_origin` to the target (`src/mosaic_media/io/reader.py:623-624`).
-But `read_frames` then delivers through `_read_current` directly rather than
-through `read` (`:640-651`), and only `read` increments `_delivered`. So the
-frames a sparse read yields are never counted.
+moves `_count_origin` to the target. But `read_frames` then delivers through
+`_read_current` directly rather than through `read`, and only `read` increments
+`_delivered`, so the frames a sparse read yields are never counted. Both methods
+are in `src/mosaic_media/io/reader.py`; they are named rather than cited by line,
+because the lines move and the names do not.
 
 Measured two ways. With facts overstating the frame count on a healthy file,
 which is the easiest reproduction and needs no fixture the tree lacks:
@@ -44,9 +45,10 @@ half ("its analysis verdict requires a transcode before it can be read") is
 unaffected, and no frame is returned wrongly.
 
 Not in scope: `read_frames`' own raise, which is correct and separately
-reported; the sparse path's cursor contract, which `read_frames` documents at
-`:645-649` as leaving "the positioned cursor at the decoder's true next frame";
-and the window guard, which is what makes this unreachable on a healthy source.
+reported; the sparse path's cursor contract, which the comment above
+`read_frames`' `yield` describes as leaving "the positioned cursor at the
+decoder's true next frame"; and the window guard, which is what makes this
+unreachable on a healthy source.
 
 ## Why it was deferred, and what the deferral got right
 

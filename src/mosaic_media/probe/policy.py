@@ -80,10 +80,8 @@ CHROME_149 = PlaybackProfile(
 # emits a frame per packet, the other says a browser can play the stream; they
 # coincide by accident and will diverge the first time a codec is trusted for
 # decode but unsupported by the profile, or the reverse. Do not fold either into
-# the other. The two literals are byte-identical and CHROME_149's comes first in
-# the file, so edit or patch this set by name, never by matching the literal: a
-# substitution that matches the literal silently rewrites the profile instead,
-# and the membership guard stays green because this set is untouched.
+# the other, and note that the two literals are currently byte-identical, so
+# nothing that selects one by its contents can tell them apart.
 FRAME_EXACT_CODECS: frozenset[str] = frozenset({"h264", "hevc", "av1", "vp9", "vp8"})
 
 

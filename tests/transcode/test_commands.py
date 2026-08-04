@@ -194,6 +194,30 @@ def test_a_copy_that_would_drop_leading_packets_reencodes_instead() -> None:
     assert arg_after(command.argv, "-flags2") == "+showall"
 
 
+def test_a_faststart_copy_that_would_drop_leading_packets_reencodes_instead() -> None:
+    # The escalation covers every copy operation, including the faststart remux
+    # whose reason is soft -- moov_not_at_start is absent from
+    # HARD_STREAM_REASONS, so this is the case where "one rule, no exception"
+    # costs something. The container-remux case above cannot reach it: an
+    # unsupported container selects REMUX_CONTAINER before moov placement is
+    # consulted, so with container="avi" the faststart branch never runs.
+    command = command_for(
+        "playback",
+        PLAYBACK_ENCODING,
+        moov_at_start=False,
+        leading_non_keyframe_frames=1,
+    )
+    assert command is not None
+    assert command.operation is Operation.REENCODE_AV1
+    assert command.reasons == frozenset({"moov_not_at_start"})
+    assert arg_after(command.argv, "-flags2") == "+showall"
+    assert "libsvtav1" in command.argv
+    # Escalating must not drop the fix for the reason that selected the
+    # operation in the first place: the output still has to carry its moov at
+    # the front, or the derivative is re-encoded and still unplayable.
+    assert arg_after(command.argv, "-movflags") == "+faststart"
+
+
 def test_a_copy_that_would_drop_discard_packets_reencodes_instead() -> None:
     command = command_for(
         "analysis",

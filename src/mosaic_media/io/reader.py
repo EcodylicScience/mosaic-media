@@ -171,6 +171,15 @@ class VideoReader:
         injected-facts path free of the demux pass it does not run today. Without
         facts the scan runs here and its index is built immediately, so no packet
         tuple outlives this method and `_ensure_index` has nothing to repeat.
+
+        A reader given an index but no facts still scans once. That scan is not
+        redundant with the index: it decides whether to open the container with
+        the edit list ignored, and it is the only statement about the source
+        independent of the index's own recorded space, so it is what lets
+        `_ensure_index` reject a container-default index handed to a source whose
+        decode ignores the edit list. The
+        index's `space` could answer the question on its own, and then nothing
+        would be left to check it against.
         """
         if self._recovery_resolved:
             return
@@ -184,17 +193,22 @@ class VideoReader:
         self._ignore_edit_list = any(packet.discard for packet in packets)
         if self._ignore_edit_list:
             self._index_space = "edit_list_ignored"
-            # A gated source must be indexed in the gated space, so the ungated
-            # scan just paid cannot be reused.
-            packets, _source = scan_packets_in_process(
-                self._path, ignore_edit_list=True
-            )
         # Build the index here rather than keeping the packets for a later
         # _ensure_index. A sequential read of a container that declares its frame
         # count never reaches _ensure_index, so holding the tuple would retain
         # every packet of the file for the reader's lifetime to serve a call that
         # never comes. The index is a fraction of its size.
         if self._index is None:
+            if self._ignore_edit_list:
+                # A source decoded with the edit list ignored must be indexed
+                # in that same space, so the container-default scan just paid
+                # cannot be reused. Inside this branch,
+                # not beside the space assignment above: its packets feed
+                # nothing but the index, so a caller who brought one would pay
+                # a whole second demux for a tuple that is discarded.
+                packets, _source = scan_packets_in_process(
+                    self._path, ignore_edit_list=True
+                )
             self._index = build_seek_index(
                 packets, source="in_process", space=self._index_space
             )
@@ -264,9 +278,10 @@ class VideoReader:
         # is validated against is only known once the options are resolved, and
         # _position_at reaches here before _ensure_container -- so with facts
         # injected the resolver has not otherwise run, and the comparison below
-        # would use __init__'s placeholder. A gated reader handed an ungated
-        # index would then pass validation and decode in one timestamp space
-        # against an index built in the other.
+        # would use __init__'s placeholder. A reader decoding with the edit list
+        # ignored, handed an index built in the container-default space, would
+        # then pass validation and decode in one timestamp space against an
+        # index built in the other.
         self._resolve_recovery_options()
         if self._index is None:
             # Only reached with facts injected: the factless path built the index
@@ -625,7 +640,7 @@ class VideoReader:
         frame period, which is a frame the decoder did not produce.
 
         The half of the delivery contract `_verify_delivery` cannot reach.
-        These two never both run: this one is gated on there being no index,
+        These two never both run: this one applies only when there is no index,
         because an index makes `_verify_delivery` available and that check is
         strictly stronger -- it compares each delivered frame against the entry
         for its own index, so it catches a mislabel wherever it happens rather
@@ -661,11 +676,11 @@ class VideoReader:
             return
         if not facts.constant_frame_rate or geometry.fps <= 0:
             return
-        # Read after those two gates, never before. A frame carries no time
+        # Read after those two conditions, never before. A frame carries no time
         # when its packet carried none, and `av` types that as a float it does
         # not always hold; the sources it happens on are exactly the ones a
         # measured constant rate and a positive frame rate exclude, so the
-        # gates above are what make this read safe.
+        # conditions above are what make this read safe.
         observed = float(frame.time)
         previous = self._previous_decoded_time
         self._previous_decoded_time = observed
@@ -723,9 +738,18 @@ class VideoReader:
         if frame is None:
             expected = len(range(self._count_origin, window_end, self._frame_step))
             if self._delivered < expected:
+                # Where the count came from, rather than always crediting facts:
+                # a factless reader takes it from the stream's declared frame
+                # count or from the packet index, and naming the wrong source
+                # sends whoever reads this to check a value that never applied.
+                declared_by = (
+                    "its facts declare"
+                    if self._facts is not None
+                    else "its container and packet index declare"
+                )
                 message = (
                     f"{self._path} delivered {self._delivered} of {expected} "
-                    "frames its facts declare; the source carries packets that "
+                    f"frames {declared_by}; the source carries packets that "
                     "decode to no frame, and its analysis verdict requires a "
                     "transcode before it can be read"
                 )

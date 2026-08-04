@@ -11,6 +11,8 @@ from av.codec.context import Flags2
 from av.video.frame import VideoFrame
 
 import mosaic_media.io.reader as reader_module
+from mosaic_media.io.index import build_seek_index
+from mosaic_media.io.packets import scan_packets_in_process
 from mosaic_media.io.reader import VideoReader
 from mosaic_media.probe.errors import MediaProbeError
 from mosaic_media.probe.policy import DEFAULT_THRESHOLDS
@@ -118,6 +120,43 @@ def test_an_index_from_the_wrong_timestamp_space_is_rejected(
             reader.seek(10)
 
 
+def test_an_injected_index_is_not_re_scanned_for_a_gated_source(
+    preroll_mp4: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A reader given an index but no facts scans once, to decide whether to
+    # open with the edit list ignored -- that answer is not in the index, and
+    # having it independently is what lets an ungated index handed to a gated
+    # source be rejected. It must not scan a second time: the gated re-scan
+    # exists only to build an index, so for a caller who brought one it is a
+    # whole demux whose result is discarded. Measured at two before the
+    # re-scan moved inside the build.
+    gated = build_seek_index(
+        scan_packets_in_process(preroll_mp4, ignore_edit_list=True)[0],
+        source="in_process",
+        space="edit_list_ignored",
+    )
+    with count_packet_scans(reader_module, monkeypatch) as scans:
+        with VideoReader(preroll_mp4, index=gated) as reader:
+            reader.seek(10)
+            ok, _frame = reader.read()
+            assert ok
+        assert scans() == 1
+
+
+def test_a_factless_reader_still_re_scans_a_gated_source_it_must_index(
+    preroll_mp4: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The other side of that branch: with no index to reuse, the gated space
+    # has to be scanned, because the ungated packets cannot be indexed for a
+    # decode that ignores the edit list.
+    with count_packet_scans(reader_module, monkeypatch) as scans:
+        with VideoReader(preroll_mp4) as reader:
+            reader.seek(10)
+            ok, _frame = reader.read()
+            assert ok
+        assert scans() == 2
+
+
 class _ReaderWithObservableFlag(VideoReader):
     """A reader that reports its own decoder flag, so the scoping rule can be
     pinned against decoder state.
@@ -163,6 +202,38 @@ def test_show_all_is_set_only_for_a_segment_starting_at_the_stream_start(
                 f"show_all {expected}"
             )
             assert reader.show_all_enabled() == expected, message
+
+
+def test_the_flag_is_cleared_and_restored_on_one_live_container(
+    open_gop_clip: Path,
+) -> None:
+    # The test above builds a fresh reader per target, so it only ever observes
+    # a decoder going from its default-clear state to set-or-clear once. What
+    # makes the per-segment rule work is the other two transitions, on a
+    # container that stays open: set to clear when a seek lands on an internal
+    # keyframe, and clear back to set when a later one returns to the stream
+    # start. A rule applied only on the way down would leave a reader that
+    # seeks backward to frame 0 decoding without the flag and silently short of
+    # the leading frames.
+    facts = probe_media(open_gop_clip)
+    index = index_for(open_gop_clip)
+    internal = [rank for rank in index.keyframe_indices if rank != 0]
+    assert internal, "the fixture must have a keyframe after the first"
+    # try/finally rather than `with`: __enter__ is annotated with the concrete
+    # class, so a subclass loses its own type inside a with block.
+    reader = _ReaderWithObservableFlag(open_gop_clip, facts=facts)
+    try:
+        reader.seek(0)
+        assert reader.show_all_enabled(), "stream start: set"
+        reader.seek(internal[0])
+        assert not reader.show_all_enabled(), "internal keyframe: cleared"
+        reader.seek(0)
+        assert reader.show_all_enabled(), "back to the stream start: restored"
+        # The restored flag still delivers, rather than merely reading as set.
+        ok, _frame = reader.read()
+        assert ok
+    finally:
+        reader.close()
 
 
 def test_open_gop_seeks_land_frame_exact(open_gop_clip: Path) -> None:
