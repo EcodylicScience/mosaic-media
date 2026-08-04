@@ -3,9 +3,11 @@
 import subprocess
 from pathlib import Path
 
+import numpy
 import pytest
 
 from mosaic_media import hwaccel
+from mosaic_media.io.reader import VideoReader
 from mosaic_media.probe.errors import MediaProbeError
 from mosaic_media.probe.facts import MediaFacts
 from mosaic_media.probe.policy import CHROME_149, DEFAULT_THRESHOLDS
@@ -734,3 +736,50 @@ def test_a_canceled_transcode_raises_and_leaves_no_output(
             cancel_check=canceler.cancel_check,
         )
     assert list(tmp_path.iterdir()) == []
+
+
+@requires_svtav1
+def test_a_reencode_materializes_every_frame_a_cut_source_carries(
+    avi_starting_on_non_keyframes: Path, tmp_path: Path
+) -> None:
+    source_facts = probe_media(avi_starting_on_non_keyframes)
+    result = transcode(
+        avi_starting_on_non_keyframes,
+        tmp_path / "out.mp4",
+        "playback",
+        PLAYBACK_ENCODING,
+    )
+    assert result.operation is Operation.REENCODE_AV1
+    assert result.output_facts is not None
+    assert result.output_facts.start_time == 0.0
+    assert result.output_path is not None
+    with VideoReader(result.output_path, facts=result.output_facts) as reader:
+        frames = [frame for _index, frame in reader]
+    # Delivery is asserted against the derivative's own facts: a constant-rate
+    # resample is not a frame-for-frame copy, and those facts are authoritative
+    # for it.
+    assert len(frames) == result.output_facts.frame_count
+    assert len(frames) >= source_facts.frame_count
+    # Counts alone cannot tell a materialized frame from a duplicate. The
+    # re-encode resamples to a constant rate, which fills the timeline whether
+    # or not the source's leading pictures survived the decode -- dropping them
+    # yields the full frame count with the gap padded by repeats of the first
+    # keyframe.
+    #
+    # Compared as content rather than as digests. Under the padding every frame
+    # in this window is the same picture, and digests still differ wherever the
+    # lossy encode fails to reproduce it bit-exactly, which makes equal bytes a
+    # measure of encoder determinism rather than of repetition. Consecutive mean
+    # absolute difference over this fixture: at most 0.002 when the window is
+    # padded, at least 2.2 when the pictures are materialized, because the
+    # source generator changes every frame. The floor sits between them, two
+    # orders of magnitude above the padding and a factor of four below the
+    # content, so neither an encoder that dithers the repeats nor one that
+    # compresses the real frames harder moves the verdict.
+    leading_window = source_facts.leading_non_keyframe_frames + 1
+    for position in range(leading_window - 1):
+        earlier = frames[position].astype(numpy.int32)
+        later = frames[position + 1].astype(numpy.int32)
+        difference = float(numpy.mean(numpy.abs(earlier - later)))
+        message = f"frames {position} and {position + 1} repeat: {difference}"
+        assert difference > 0.5, message

@@ -5,7 +5,12 @@ Each file is probed once at construction -- or not at all when the caller
 injects `facts`, a sequence parallel to the paths: consumers hold MediaFacts
 from ingestion and measurement is never re-derived, so an injected open pays
 no ffprobe subprocess. `indices` likewise injects per-segment seek indices;
-segments without one build it from an in-process packet scan on first use.
+segments without one build it from an in-process packet scan on first use, run
+in that segment's own timestamp space -- gated when the segment's facts report
+discard-flagged packets, ungated otherwise -- because the per-segment reader
+decodes in the same space and rejects an index built in the other one. An
+injected index is subject to that same check, and a caller can tell which space
+a segment needs from `discard_flagged_packets` on the facts it already holds.
 Uniformity across the sequence is validated with the probe's
 uniform_properties, the same check the arrangement layer uses, so a resolution
 or frame-rate mismatch is rejected at construction.
@@ -178,9 +183,14 @@ class MultiVideoReader:
         cached = self._indices[segment_index]
         if cached is not None:
             return cached
-        packets, _source = scan_packets_in_process(self._segments[segment_index].path)
+        ignore_edit_list = self._facts[segment_index].discard_flagged_packets > 0
+        packets, _source = scan_packets_in_process(
+            self._segments[segment_index].path, ignore_edit_list=ignore_edit_list
+        )
         built = build_seek_index(
-            packets, source="in_process", space="container_default"
+            packets,
+            source="in_process",
+            space="edit_list_ignored" if ignore_edit_list else "container_default",
         )
         self._indices[segment_index] = built
         return built

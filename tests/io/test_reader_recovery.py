@@ -10,11 +10,13 @@ import pytest
 from av.codec.context import Flags2
 from av.video.frame import VideoFrame
 
+import mosaic_media.io.reader as reader_module
 from mosaic_media.io.reader import VideoReader
 from mosaic_media.probe.errors import MediaProbeError
 from mosaic_media.probe.policy import DEFAULT_THRESHOLDS
 from mosaic_media.probe.probe import probe_media
 from tests.helpers.indexes import index_for
+from tests.helpers.scans import count_packet_scans
 
 
 def test_show_all_is_a_no_op_on_a_source_opening_on_a_keyframe(
@@ -334,3 +336,82 @@ def test_the_trusted_set_is_exactly_what_the_suite_measures() -> None:
     assert DEFAULT_THRESHOLDS.frame_exact_codecs == frozenset(
         codec for _fixture_name, codec in _MEASURED_CODECS
     )
+
+
+def test_injected_facts_sequential_read_runs_no_packet_scan(
+    clips: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The performance gate measures this path against OpenCV. Its metadata-open,
+    # sequential-full-decode and strided-decode payloads run no packet scan at
+    # all: they inject facts and never seek. A scan added here would fail no
+    # correctness test; it would fail the gate on a machine this suite never
+    # runs on. Pin it where it is cheap to see.
+    path = clips["cfr_30fps_mp4"]
+    facts = probe_media(path)
+    with count_packet_scans(reader_module, monkeypatch) as scans:
+        with VideoReader(path, facts=facts) as reader:
+            delivered = sum(1 for _index, _frame in reader)
+        assert delivered == facts.frame_count
+        assert scans() == 0
+
+
+def test_injected_facts_metadata_access_opens_no_container(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # What the metadata-open payloads measure. Point the reader at a path with no
+    # file behind it: geometry still resolves from the facts, and any container
+    # open -- including the rotation probe's second one -- would raise
+    # "failed to open" here instead.
+    facts = probe_media(clips["cfr_30fps_mp4"])
+    with VideoReader(tmp_path / "absent.mp4", facts=facts) as reader:
+        assert (reader.width, reader.height, reader.fps, reader.frame_count) == (
+            facts.width,
+            facts.height,
+            facts.fps,
+            facts.frame_count,
+        )
+
+
+def test_injected_facts_strided_read_runs_no_packet_scan(
+    clips: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The strided-decode payloads read with a frame step and no injected index.
+    # Serving a large step by seeking to each target instead of decoding through
+    # is the obvious optimization here, and it would put a scan on this path
+    # that the unstrided pin above cannot see.
+    path = clips["cfr_30fps_mp4"]
+    facts = probe_media(path)
+    with count_packet_scans(reader_module, monkeypatch) as scans:
+        with VideoReader(path, facts=facts, frame_step=5) as reader:
+            delivered = sum(1 for _index, _frame in reader)
+        assert delivered == len(range(0, facts.frame_count, 5))
+        assert scans() == 0
+
+
+def test_injected_facts_seek_runs_one_packet_scan(
+    clips: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Seeking resolves the landing against the packet index, which facts alone
+    # do not carry, so this path builds it once. Pinned at the one it already
+    # runs: a second scan would not fail a correctness test either.
+    path = clips["cfr_30fps_mp4"]
+    facts = probe_media(path)
+    with count_packet_scans(reader_module, monkeypatch) as scans:
+        with VideoReader(path, facts=facts) as reader:
+            reader.seek(10)
+            ok, _frame = reader.read()
+            assert ok
+        assert scans() == 1
+
+
+def test_injected_facts_sparse_read_runs_one_packet_scan(
+    clips: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The sparse-extraction payload, which seeks per target through one index.
+    path = clips["cfr_30fps_mp4"]
+    facts = probe_media(path)
+    with count_packet_scans(reader_module, monkeypatch) as scans:
+        with VideoReader(path, facts=facts) as reader:
+            targets = [index for index, _frame in reader.read_frames([5, 20, 40])]
+        assert targets == [5, 20, 40]
+        assert scans() == 1

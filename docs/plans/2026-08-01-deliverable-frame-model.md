@@ -27,7 +27,8 @@ before Task 1; every task below implements a numbered change from it.
 - Layering: `probe/` is standard library only. `numpy` and `av` may be imported
   only from `io/`. `typer` only from `cli/`. `tests/test_import_guard.py`
   enforces this.
-- Never import `mosaic` or `mosaic_api`. They are consumers.
+- Never import a consumer. This package sits below both of them and knows
+  neither -- in an import or in prose.
 - basedpyright runs strict over `src/ tests/ scripts/`. No `typing.Any`, no
   `typing.Optional` (write `X | None`), no `typing.cast`, no `# noqa`, no
   `# pyright: ignore`, no `# type: ignore`. A finding is a design signal; fix the
@@ -2096,8 +2097,9 @@ behind -- `assert scans() == 0` subsumes what it asserts.
 def test_injected_facts_sequential_read_runs_no_packet_scan(
     clips: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The performance gate measures this path against OpenCV across seventeen
-    # payloads, five of which run no packet scan today. A scan added here would
+    # The performance gate measures this path against OpenCV. Its metadata-open,
+    # sequential-full-decode and strided-decode payloads run no packet scan at
+    # all: they inject facts and never seek. A scan added here would
     # not fail a correctness test; it would fail the gate on a machine this suite
     # never runs on. Pin it where it is cheap to see.
     path = clips["cfr_30fps_mp4"]
@@ -2189,25 +2191,37 @@ does not describe it.
 ### Task 10: Consumer coordination
 
 Two new required `MediaFacts` fields are one logical change across three
-repositories. This task produces no code here.
+repositories. **This task writes nothing into this one.**
 
-- [ ] **Step 1: Write the handoff issue**
+The handoff belongs in each consumer's own issue directory, not here. A document
+here describing where a consumer stores its facts, which of its models enumerate
+them and which of its tests pin them is this package holding knowledge of its
+own downstream -- the dependency edge inverted in prose rather than in an
+import, and just as wrong. Eliding the consumers' names does not fix it; the
+knowledge is the violation, not the vocabulary. A consumer may know this package
+because it depends on it. This package may not know a consumer.
 
-Create `docs/issues/consumers-need-the-frame-delivery-counts.md` recording:
+- [ ] **Step 1: File the migration in each consumer, following that repository's
+      own convention**
+
+Each document records what its own repository must do:
 `discard_flagged_packets` and `leading_non_keyframe_frames` are new required
-fields; the toolkit stores full facts as JSON in its media index so they need no
-flat column, and its existing re-probe path is the migration route; the backend
-stores facts as flat columns and needs a migration plus a `FACT_FIELDS` entry.
-Note that a re-probe re-mints no `video_uuid` or `content_digest`, because
-identity hashes packets and the header and never `MediaFacts`. Note also that the
-toolkit's stale-facts error names the identity fields specifically and should
-widen to cover a row stale on any measurement.
+fields with no default, so every literal construction and every persisted
+representation is short two values; a re-probe re-mints no `video_uuid` or
+`content_digest`, because identity hashes the header and the packets and never
+`MediaFacts`; and zero is a legitimate measurement for both counts, so any
+backfill produces a row indistinguishable from a measured one.
 
-- [ ] **Step 2: Add its `_INDEX.md` row and commit**
+Verify every claim against the consumer's source before writing it. The
+migration is acted on by people who will not open this repository.
+
+- [ ] **Step 2: Commit this correction here**
+
+Nothing else in this repository changes.
 
 ```bash
-git add docs/issues/
-git commit -m "Record the consumer migration the new probe counts require"
+git add docs/plans/2026-08-01-deliverable-frame-model.md
+git commit -m "Move the consumer migration handoff into the consumers"
 ```
 
 ---

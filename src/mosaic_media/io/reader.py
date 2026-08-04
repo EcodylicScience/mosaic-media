@@ -511,8 +511,19 @@ class VideoReader:
 
         The index and the decode are built by one scanner in one timestamp
         space, so their times agree exactly and the tolerance is margin, not
-        noise coverage. A time matching no entry means the index does not
-        describe this decode, which is a defect rather than a seek that missed.
+        noise coverage.
+
+        An index's recorded space is provenance, not a check on its timestamps:
+        nothing re-derives them, so an index carrying the wrong label passes
+        that check and shifts every landing it resolves. What catches a shift is
+        where the seek lands, not which way the label is wrong. A landing later
+        than the index claimed is rejected by `_position_at`. A landing at or
+        before it is legitimate -- an earlier keyframe is decoded forward from
+        -- and reaches here instead; the tolerance is half the index spacing, so
+        the acceptance windows tile the timeline without gaps and any landing
+        inside the index span resolves to some rank, silently the wrong one.
+        Only a landing outside that span matches no entry, which is what raises
+        here.
         """
         index = self._ensure_index()
         position = bisect.bisect_left(index.frame_times, observed - tolerance)
