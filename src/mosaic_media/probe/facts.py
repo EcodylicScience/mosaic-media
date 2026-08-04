@@ -70,6 +70,25 @@ class MediaFacts:
     count has to be real there, because the remux the verdict already routes
     such a stream to through `unreliable_timing_metadata` is a stream copy, and
     a copy drops exactly the frames this counts.
+
+    `max_timestamp_gap_frame_periods` is the widest step between neighboring
+    presentation timestamps, in frame periods -- 1.0 for a file whose timestamps
+    are exactly uniform, more where a container quantizes them to a coarse tick
+    or the rate genuinely varies. A reader that reaches a frame by counting
+    decoded frames uses it to tell a missing frame from ordinary spacing: it is
+    the widest two neighbors may legitimately sit apart, so anything wider is a
+    frame the decoder did not produce.
+
+    It is not derivable from `constant_frame_rate` or from the grid fit's drift.
+    Constant-rate classification bounds each timestamp's deviation from its slot
+    on the global grid, which bounds the neighbor step only at 1 + 2 * drift --
+    2.0 periods under the shipped threshold, which is exactly the spacing one
+    missing frame produces, so the bound cannot separate them. The measurement
+    can: a file quantized to a coarse tick measures about 1.66 where a uniform
+    one measures 1.0.
+
+    0.0 for a stream whose packets carry no timestamps, alongside the other
+    timing placeholders, since there are no timestamps to step between.
     """
 
     container: str
@@ -99,6 +118,7 @@ class MediaFacts:
     max_gop_bytes: int
     discard_flagged_packets: int
     leading_non_keyframe_frames: int
+    max_timestamp_gap_frame_periods: float
     timing_measured: bool
     video_uuid: str
     content_digest: str

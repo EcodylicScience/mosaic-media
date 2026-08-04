@@ -72,6 +72,8 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
         constant_frame_rate = False
         max_instantaneous_fps: float | None = None
         timing_measured = False
+        # No timestamps, so no step between them to measure.
+        max_timestamp_gap_frame_periods = 0.0
         # avg_frame_rate here is the h264 demuxer's fixed default, read from
         # nothing in the file. The rate the bitstream itself states is the only
         # honest answer, and 0.0 when it states none.
@@ -84,6 +86,7 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
         constant_frame_rate = timing.constant_frame_rate
         max_instantaneous_fps = timing.max_instantaneous_fps
         timing_measured = True
+        max_timestamp_gap_frame_periods = timing.max_timestamp_gap_frame_periods
         declared_fps = header.declared_fps
 
     identity = mint_identity(header, packets, timing_measured=timing_measured)
@@ -116,6 +119,7 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
         max_gop_bytes=gop.max_gop_bytes,
         discard_flagged_packets=sum(1 for packet in packets if packet.discard),
         leading_non_keyframe_frames=_leading_non_keyframe_frames(packets, source),
+        max_timestamp_gap_frame_periods=max_timestamp_gap_frame_periods,
         timing_measured=timing_measured,
         video_uuid=identity.video_uuid,
         content_digest=identity.content_digest,

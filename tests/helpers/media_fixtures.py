@@ -17,6 +17,7 @@ the committed originals are never handed out directly.
 import shutil
 import subprocess
 from collections.abc import Iterator
+from fractions import Fraction
 from pathlib import Path
 from typing import Literal
 
@@ -263,6 +264,106 @@ def avi_starting_on_non_keyframes(
             written += 1
             output_container.mux(packet)
     yield destination
+
+
+def _restamp(
+    source: Path, destination: Path, timescale: int, seconds: list[float]
+) -> Path:
+    """Rewrite a clip's timestamps, placing presentation frame `i` at
+    `seconds[i]` on a `1/timescale` tick.
+
+    Placement is by presentation RANK, recovered by sorting the source's own
+    presentation timestamps. Every committed clip carries B-frames, so writing
+    new timestamps in demultiplex order would shuffle the presentation order and
+    produce a file that measures the shuffle rather than the timing under test.
+    Decode timestamps are shifted back by the largest amount decode order ever
+    runs ahead of presentation order, which keeps them ascending and never above
+    their own packet's presentation timestamp -- both of which the mp4 muxer
+    rejects outright rather than warning about.
+    """
+    with av.open(str(source)) as probe_container:
+        probe_stream = probe_container.streams.video[0]
+        presentations = [
+            packet.pts
+            for packet in probe_container.demux(probe_stream)
+            if packet.size and packet.pts is not None
+        ]
+    rank = {value: index for index, value in enumerate(sorted(presentations))}
+    lead = max(
+        seconds[position] - seconds[rank[value]]
+        for position, value in enumerate(presentations)
+    )
+    with (
+        av.open(str(source)) as input_container,
+        av.open(str(destination), mode="w") as output_container,
+    ):
+        input_stream = input_container.streams.video[0]
+        output_stream = output_container.add_stream_from_template(input_stream)
+        output_stream.time_base = Fraction(1, timescale)
+        position = 0
+        for packet in input_container.demux(input_stream):
+            if packet.size == 0 or packet.pts is None:
+                continue
+            packet.stream = output_stream
+            packet.pts = round(seconds[rank[packet.pts]] * timescale)
+            packet.dts = round((seconds[position] - lead) * timescale)
+            packet.time_base = Fraction(1, timescale)
+            position += 1
+            output_container.mux(packet)
+    return destination
+
+
+# Frame rate and container timescale, for clips whose timestamps a coarse tick
+# quantizes. Each is a rate a real recorder produces written into a timescale
+# too coarse to express it exactly, so consecutive frames land unevenly while
+# the file is still constant-rate. The committed corpus is all 1/15360 mp4 and
+# cannot express this class at all.
+QUANTIZED_RATES: tuple[tuple[str, float, int], ...] = (
+    ("30_in_36", 30.0, 36),
+    ("25_in_30", 25.0, 30),
+    ("23_976_in_30", 24000 / 1001, 30),
+    ("50_in_60", 50.0, 60),
+    ("10_in_12", 10.0, 12),
+)
+
+
+@pytest.fixture(scope="session")
+def quantized_clips(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
+    """One clip per `QUANTIZED_RATES` entry, timestamps on that coarse tick.
+
+    Frame `i` sits at `round(i * timescale / fps)` ticks -- what a muxer writing
+    that rate into that timescale does. Every one probes constant-rate with no
+    analysis reason, so the reader must read each cleanly.
+    """
+    root = tmp_path_factory.mktemp("quantized")
+    source = asset("cfr_30fps.mp4", root / "cfr_30fps.mp4")
+    made: dict[str, Path] = {}
+    for name, fps, timescale in QUANTIZED_RATES:
+        frames = 60
+        seconds = [
+            round(index * timescale / fps) / timescale for index in range(frames)
+        ]
+        made[name] = _restamp(source, root / f"{name}.mp4", timescale, seconds)
+    return made
+
+
+@pytest.fixture(scope="session")
+def ramped_rate_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A clip whose rate slides from 30 fps to 24 over its length.
+
+    The whole-file grid fit calls it variable, because the deviation from a
+    single uniform grid accumulates; no two neighbors are far apart. That
+    combination is what separates a per-file spacing threshold from a
+    constant-rate exemption: this clip is checked by the first and would be
+    exempted wholesale by the second.
+    """
+    root = tmp_path_factory.mktemp("ramped")
+    source = asset("cfr_30fps.mp4", root / "cfr_30fps.mp4")
+    frames = 60
+    seconds = [0.0]
+    for step in range(frames):
+        seconds.append(seconds[-1] + 1.0 / (30.0 - 6.0 * step / frames))
+    return _restamp(source, root / "ramped.mp4", 15360, seconds)
 
 
 @pytest.fixture(scope="session")

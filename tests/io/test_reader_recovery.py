@@ -15,8 +15,10 @@ from mosaic_media.io.index import build_seek_index
 from mosaic_media.io.packets import scan_packets_in_process
 from mosaic_media.io.reader import VideoReader
 from mosaic_media.probe.errors import MediaProbeError
-from mosaic_media.probe.policy import DEFAULT_THRESHOLDS
+from mosaic_media.probe.policy import CHROME_149, DEFAULT_THRESHOLDS
 from mosaic_media.probe.probe import probe_media
+from mosaic_media.probe.verdict import derive
+from tests.helpers.media_fixtures import QUANTIZED_RATES
 from tests.helpers.indexes import index_for
 from tests.helpers.scans import count_packet_scans
 
@@ -481,19 +483,140 @@ def test_the_gap_check_covers_the_reader_that_builds_no_index(
         assert scans() == 0
 
 
-def test_a_variable_rate_source_is_exempt_from_the_gap_check(
+@pytest.mark.parametrize("name", [name for name, _fps, _scale in QUANTIZED_RATES])
+def test_a_coarse_timescale_source_reads_clean(
+    quantized_clips: dict[str, Path], name: str
+) -> None:
+    # A container too coarse to express its own frame rate quantizes the
+    # timestamps, so a constant-rate file's neighbors land unevenly -- measured
+    # at 1.66 periods for 30 fps in a 1/36 timescale. Every one of these is
+    # analysis-ready by this package's own verdict, so the reader must not fail
+    # on it. A fixed threshold of 1.5 raised on all five; the corpus is all
+    # 1/15360 mp4 and could not see it.
+    path = quantized_clips[name]
+    facts = probe_media(path)
+    assert facts.constant_frame_rate
+    assert derive(facts, CHROME_149, DEFAULT_THRESHOLDS).analysis_transcode is None
+    assert facts.max_timestamp_gap_frame_periods > 1.5
+    for start_frame in (0, 1, 7):
+        for end_frame in (None, 40):
+            with VideoReader(
+                path, facts=facts, start_frame=start_frame, end_frame=end_frame
+            ) as reader:
+                delivered = sum(1 for _index, _frame in reader)
+            window_end = (
+                facts.frame_count
+                if end_frame is None
+                else min(end_frame, facts.frame_count)
+            )
+            assert delivered == len(range(min(start_frame, window_end), window_end))
+
+
+def test_the_check_declines_where_the_files_own_spacing_reaches_the_signal(
+    quantized_clips: dict[str, Path],
+) -> None:
+    # One missing frame puts two neighbors at the sum of the steps it spanned;
+    # on this clip the legitimate steps alternate 0.83 and 1.66, so a frame lost
+    # between two short ones produces exactly a step the file takes anyway. No
+    # comparison of spacings can separate them, and the check declines rather
+    # than guessing either way. Pinned as a deliberate outcome: the shortfall is
+    # still reported, by the delivery count, and what must NOT happen is the gap
+    # check inventing a verdict it cannot support.
+    path = quantized_clips["30_in_36"]
+    facts = probe_media(path)
+    assert facts.max_timestamp_gap_frame_periods + 0.5 >= 2.0
+    with _ReaderSkippingPresentationRanks(path, facts=facts) as reader:
+        reader.skipped_ranks = frozenset({2, 3})
+        with pytest.raises(MediaProbeError) as excinfo:
+            for _index, _frame in reader:
+                pass
+    assert "frame periods later" not in str(excinfo.value)
+    assert "delivered" in str(excinfo.value)
+
+
+def test_a_ramped_rate_source_is_checked_rather_than_exempted(
+    ramped_rate_clip: Path,
+) -> None:
+    # The threshold comes from the file's own spacing, not from its constant-rate
+    # flag, and this clip is where those disagree: the whole-file grid fit calls
+    # it variable, while no two neighbors sit far apart. A constant-rate gate
+    # would exempt it from the check entirely; its own measured spacing keeps it
+    # covered. Re-adding that gate fails here.
+    facts = probe_media(ramped_rate_clip)
+    assert not facts.constant_frame_rate
+    assert facts.max_timestamp_gap_frame_periods + 0.5 < 2.0
+    with VideoReader(ramped_rate_clip, facts=facts) as reader:
+        assert sum(1 for _index, _frame in reader) == facts.frame_count
+    with _ReaderSkippingPresentationRanks(ramped_rate_clip, facts=facts) as reader:
+        reader.skipped_ranks = frozenset({20, 21})
+        with pytest.raises(MediaProbeError, match="frame periods later"):
+            for _index, _frame in reader:
+                pass
+
+
+def test_a_variable_rate_source_declines_on_its_own_spacing(
     corpus_vfr: Path,
 ) -> None:
-    # A gap wider than one period is the normal case on a variable-rate source
-    # -- measured at 2.2 periods on this fixture, above the 1.5 the check
-    # raises at -- so the gap carries no signal there and the check is gated on
-    # measured constant timing. Reading with facts injected and no seek is the
+    # A genuinely variable source declines through the same rule as the coarse
+    # timescale one -- its own measured spacing reaches the signal, at 2.2
+    # periods -- rather than through a separate constant-rate exemption. One
+    # rule covers both, and reading with facts injected and no seek is the
     # configuration where the gap check is the active one.
     facts = probe_media(corpus_vfr)
     assert not facts.constant_frame_rate
+    assert facts.max_timestamp_gap_frame_periods + 0.5 >= 2.0
     with VideoReader(corpus_vfr, facts=facts) as reader:
         delivered = sum(1 for _index, _frame in reader)
     assert delivered == facts.frame_count
+
+
+def test_an_unmeasured_spacing_declines_rather_than_checking(
+    clips: dict[str, Path],
+) -> None:
+    # A required field with no default still arrives unmeasured down one path: a
+    # persisted row filled in rather than probed. Zero is not inert there -- it
+    # sets the threshold at half a period, which every healthy file exceeds on
+    # its second frame, so the read raised at frame 1 and delivered 1 of 60. No
+    # measurement produces it: the widest step between distinct ascending
+    # timestamps is strictly positive, every fixture in this suite measures at
+    # least 1.0, and a file without timestamps has no frame rate and returns at
+    # the guard above. Declining costs no coverage and is the honest reading of
+    # a value that was never taken; the shortfall is still reported, by the
+    # delivery count.
+    path = clips["cfr_30fps_mp4"]
+    facts = probe_media(path)
+    assert facts.max_timestamp_gap_frame_periods > 0.0
+    unmeasured = replace(facts, max_timestamp_gap_frame_periods=0.0)
+    with VideoReader(path, facts=unmeasured) as reader:
+        assert sum(1 for _index, _frame in reader) == facts.frame_count
+    with _ReaderSkippingPresentationRanks(path, facts=unmeasured) as reader:
+        reader.skipped_ranks = frozenset({2, 3})
+        with pytest.raises(MediaProbeError) as excinfo:
+            for _index, _frame in reader:
+                pass
+    assert "frame periods later" not in str(excinfo.value)
+    assert "delivered" in str(excinfo.value)
+
+
+def test_an_untimed_source_carries_no_frame_rate_to_reach_the_spacing_guard(
+    clips: dict[str, Path], raw_starting_on_non_keyframes: Path
+) -> None:
+    # The spacing measurement is zero on a source with no packet timestamps, and
+    # that zero never reaches the spacing guard: the frame rate is zero too, and
+    # the guard above returns on it. Measured by defeating that guard -- the
+    # sequential raw read then reaches the frame's own time, which is None on
+    # such a source, and fails. What the spacing guard covers is therefore only
+    # a timed file whose value was never taken, never a file that has none.
+    for path in (
+        clips["raw_h264"],
+        clips["raw_fractional_rate_h264"],
+        raw_starting_on_non_keyframes,
+    ):
+        facts = probe_media(path)
+        assert facts.max_timestamp_gap_frame_periods == 0.0
+        assert facts.fps == 0.0
+        with VideoReader(path, facts=facts) as reader:
+            assert sum(1 for _index, _frame in reader) == facts.frame_count
 
 
 def test_the_delivery_check_stays_silent_across_a_healthy_source(

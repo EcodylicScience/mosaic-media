@@ -21,6 +21,7 @@ class Timing:
     constant_frame_rate: bool
     max_instantaneous_fps: float | None
     max_drift_frame_periods: float
+    max_timestamp_gap_frame_periods: float
 
 
 def measure_timing(packets: tuple[Packet, ...], drift_frame_periods: float) -> Timing:
@@ -65,6 +66,15 @@ def measure_timing(packets: tuple[Packet, ...], drift_frame_periods: float) -> T
     )
     constant = drift < drift_frame_periods
 
+    # The widest step between neighbors, as distinct from `drift`, which is each
+    # timestamp's deviation from its slot on the global grid. A reader counting
+    # decoded frames compares neighbors, so this is the quantity that says how
+    # far apart two frames of this file may legitimately sit; deriving it from
+    # `drift` would only bound it, at 1 + 2 * drift.
+    max_timestamp_gap_frame_periods = max(
+        (later - earlier) * fps for earlier, later in zip(times, times[1:])
+    )
+
     max_instantaneous_fps: float | None = None
     if not constant:
         deltas = [later - earlier for earlier, later in zip(times, times[1:])]
@@ -81,6 +91,7 @@ def measure_timing(packets: tuple[Packet, ...], drift_frame_periods: float) -> T
         constant_frame_rate=constant,
         max_instantaneous_fps=max_instantaneous_fps,
         max_drift_frame_periods=drift,
+        max_timestamp_gap_frame_periods=max_timestamp_gap_frame_periods,
     )
 
 

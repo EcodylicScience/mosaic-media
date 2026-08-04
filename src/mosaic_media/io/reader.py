@@ -657,41 +657,72 @@ class VideoReader:
         `end_frame=40` delivered 40 frames, 38 of them the wrong picture, and
         ended clean.
 
-        Restricted to a source whose facts measured constant timing, because
-        the whole signal is that a gap wider than one period is anomalous, and
-        on a variable-rate source it is the normal case -- measured at 2.2
-        periods on a 30 fps recording with a 10 fps stretch. A variable-rate
-        source is exempt rather than approximated. That costs no coverage on
-        the shape this exists for: a file whose packets do not all decode is
-        not thereby variable-rate, and the recorded null-frame source measures
-        constant across all of its packets.
+        The threshold comes from the file, not from a constant. A fixed one
+        cannot be sound: a container that quantizes timestamps to a coarse tick
+        carries a constant rate whose neighbors are unevenly spaced -- measured
+        at 1.66 periods for 30 fps written into a 1/36 timescale, and at 1.60
+        for 23.976 into 1/30 -- and every such file is analysis-ready by this
+        package's own verdict. A constant at 1.5 raises on all of them, which
+        is a worse defect than the one this catches. `MediaFacts` carries the
+        widest step the file's own timestamps take, and the threshold is that
+        plus the half-period margin the landing and index checks also carry.
 
-        The threshold is 1.5 periods: consecutive frames sit exactly one period
-        apart on every constant-rate source measured, in every window shape,
-        and a single missing frame puts them two apart. Half a period of margin
-        either way, the same margin the landing and index checks carry.
+        A non-positive spacing declines too, at the other end of the same range.
+        No source measures one: the value is the widest step between distinct
+        ascending timestamps, so it is strictly positive wherever a file has
+        timestamps at all, and a file without them carries no frame rate and
+        returns at the guard above. Every fixture in this suite measures at
+        least 1.0. A zero therefore says the field was never measured -- a
+        persisted row filled in rather than probed, which is the one path that
+        can still supply a required no-default field unmeasured -- and it is not
+        an inert placeholder: acting on it sets the threshold at half a period,
+        which every healthy file exceeds on its second frame.
+
+        Above 2.0 periods the check declines rather than guesses. One missing
+        frame puts two neighbors at the sum of the two steps it spanned, which
+        on a uniform file is 2.0, so once a file's own spacing plus margin
+        reaches 2.0 the signal and the tolerance overlap and no comparison of
+        spacings can separate them. Measured on the quantized files above: the
+        legitimate steps alternate 0.83 and 1.66, so a frame dropped between two
+        short ones produces exactly 1.66 -- indistinguishable from a step the
+        file takes anyway. Declining is the honest outcome, and those files are
+        left to the index check whenever they reach it.
+
+        The same rule retires the variable-rate exemption this check first
+        carried. A genuinely variable source declines here on its own measured
+        spacing -- 2.25 periods on a 30 fps recording with a 10 fps stretch --
+        rather than through `constant_frame_rate`, and a mildly variable one is
+        now checked instead of exempted: measured on a file whose rate ramps
+        from 30 fps to 24, the grid fit calls it variable at 1.61 periods of
+        drift while no two neighbors sit more than 1.12 apart, so it is checked
+        at 1.62 where the flag would have exempted it entirely.
         """
         facts = self._facts
         if self._index is not None or facts is None:
             return
-        if not facts.constant_frame_rate or geometry.fps <= 0:
+        if geometry.fps <= 0:
             return
-        # Read after those two conditions, never before. A frame carries no time
-        # when its packet carried none, and `av` types that as a float it does
-        # not always hold; the sources it happens on are exactly the ones a
-        # measured constant rate and a positive frame rate exclude, so the
-        # conditions above are what make this read safe.
+        if facts.max_timestamp_gap_frame_periods <= 0.0:
+            return
+        threshold = facts.max_timestamp_gap_frame_periods + 0.5
+        if threshold >= 2.0:
+            return
+        # Read after those conditions, never before. A frame carries no time when
+        # its packet carried none, and `av` types that as a float it does not
+        # always hold; the sources it happens on are exactly the ones a positive
+        # frame rate excludes, so the condition above is what makes this safe.
         observed = float(frame.time)
         previous = self._previous_decoded_time
         self._previous_decoded_time = observed
         if previous is None:
             return
         gap = (observed - previous) * geometry.fps
-        if gap <= 1.5:
+        if gap <= threshold:
             return
         message = (
             f"{self._path} decoded a frame at {observed} directly after one at "
-            f"{previous}, {gap:.2f} frame periods later; the source carries "
+            f"{previous}, {gap:.2f} frame periods later, where its own "
+            f"timestamps step at most {threshold - 0.5:.2f}; the source carries "
             "packets that decode to no frame, so the frames between them are "
             "missing and every later index is mislabeled. It must be "
             "transcoded before it can be read per frame"

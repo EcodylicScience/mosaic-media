@@ -2190,8 +2190,8 @@ does not describe it.
 
 ### Task 10: Consumer coordination
 
-Two new required `MediaFacts` fields are one logical change across three
-repositories. **This task writes nothing into this one.**
+The new required `MediaFacts` fields are one logical change across this package
+and each of its consumers. **This task writes nothing into this one.**
 
 The handoff belongs in each consumer's own issue directory, not here. A document
 here describing where a consumer stores its facts, which of its models enumerate
@@ -2204,13 +2204,29 @@ because it depends on it. This package may not know a consumer.
 - [ ] **Step 1: File the migration in each consumer, following that repository's
       own convention**
 
-Each document records what its own repository must do:
-`discard_flagged_packets` and `leading_non_keyframe_frames` are new required
-fields with no default, so every literal construction and every persisted
-representation is short two values; a re-probe re-mints no `video_uuid` or
-`content_digest`, because identity hashes the header and the packets and never
-`MediaFacts`; and zero is a legitimate measurement for both counts, so any
-backfill produces a row indistinguishable from a measured one.
+Each document records what its own repository must do. `discard_flagged_packets`,
+`leading_non_keyframe_frames` and `max_timestamp_gap_frame_periods` are new
+required fields with no default, so every literal construction and every
+persisted representation is short a value for each. A re-probe re-mints no
+`video_uuid` or `content_digest`, because identity hashes the header and the
+packets and never `MediaFacts`.
+
+Backfilling is where the fields part company, and the document must say so
+rather than give one rule for all of them.
+
+Zero is a legitimate measurement for the packet counts, so any backfill produces
+a row indistinguishable from a measured one -- unrecoverable afterwards, but
+inert while it sits there.
+
+`max_timestamp_gap_frame_periods` admits no backfill at all, and a re-probe is
+its only correct migration. Zero is not a placeholder the reader ignores: it is
+the value the reader sizes its per-frame gap threshold from. The reader declines
+the check on a non-positive value rather than acting on it -- without that guard
+a zero puts the threshold at half a frame period, which every healthy file
+exceeds on its second frame, so every read of that file raises on its second
+frame. What the guard buys is that such a row reads clean instead; what it
+cannot buy is the measurement, so the file silently carries no gap check. That
+is a migration which has not happened rather than one which has.
 
 Verify every claim against the consumer's source before writing it. The
 migration is acted on by people who will not open this repository.
