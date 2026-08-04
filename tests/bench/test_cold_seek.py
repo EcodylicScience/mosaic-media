@@ -1,12 +1,13 @@
 """Gated workload: cold isolated random single-frame seeks.
 
-No consumer performs isolated random single-frame seeks -- every seek call
-site in the toolkit today is monotonic forward (see the gated seek
-workloads). A shuffled target sequence defeats the reader's discard-forward
-reuse (see support.reader_read_targets): each seek resolves the target's
+The access pattern the reader's design does not favor, measured on purpose. A
+shuffled target sequence defeats the discard-forward reuse an ascending one
+gets (see support.reader_read_targets): each seek resolves the target's
 preceding keyframe from the packet index and calls container.seek to it, so
 every target pays a fresh keyframe seek plus decode-forward rather than
-continuing an already-open decode position.
+continuing an already-open decode position. The gated seek workloads measure
+the ascending pattern; this one measures what the reader costs when a caller
+cannot offer that ordering.
 
 This is the one workload gated below parity (0.9) rather than at 1.0. On the
 reference configuration (see conftest.py) the reader measures faster than

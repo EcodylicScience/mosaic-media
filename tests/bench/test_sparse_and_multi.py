@@ -1,12 +1,13 @@
 """Gated workloads: sorted-sparse frame extraction and multi-video junction read.
 
-- sorted-sparse-extraction mirrors save_frames_as_png: extract a set of sorted
-  target frames. OpenCV seeks and reads once per target, re-decoding the GOP
-  chain each time; the reader groups targets by GOP via the packet index and
-  decodes each GOP once (read_frames).
-- multi-video-junction mirrors MultiVideoReader consumers (render_stream): read
-  across the boundary between two files. The OpenCV baseline opens two captures
-  and stitches them manually; the reader presents one global frame space.
+- sorted-sparse-extraction: pull a set of targets that is sorted and sparse --
+  ascending, spread across the file, a small fraction of its frames. OpenCV
+  seeks and reads once per target, re-decoding the GOP chain each time; the
+  reader groups targets by GOP via the packet index and decodes each GOP once
+  (read_frames).
+- multi-video-junction: read straight through the boundary between two files,
+  as one continuous frame sequence. The OpenCV baseline opens two captures and
+  stitches them manually; the reader presents one global frame space.
 """
 
 from __future__ import annotations

@@ -28,11 +28,13 @@ class VideoProperties(Protocol):
 
 @dataclass(frozen=True)
 class MeasuredVideoProperties:
-    """The measured properties uniform_properties compares across a sequence's
-    videos. Satisfies the VideoProperties protocol structurally, and is used for
-    a verified upload file's projected props, an existing sequence video's props,
-    and the finalize gate's per-sequence uniformity check, so no caller has to
-    fabricate a partial MediaFacts."""
+    """Just the four properties `uniform_properties` compares.
+
+    Satisfies the `VideoProperties` protocol structurally, so a caller holding
+    these four measurements can compare a group of videos without building a
+    whole `MediaFacts` around them. `MediaFacts` is what one probe of one file
+    produces; this is the subset the comparison reads, for a caller assembling
+    the values from somewhere other than a probe of the file itself."""
 
     fps: float
     width: int

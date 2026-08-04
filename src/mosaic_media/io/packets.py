@@ -13,9 +13,11 @@ ffprobe reports as absent.
 option. The demuxer delivers every packet either way -- a container edit list
 does not withhold packets, it marks them "do not present" -- but a default
 decode honors that mark and emits fewer frames than this scan has timestamps.
-Measured on one such source: 50 packets demultiplexed, 13 flagged, 37 frames
-decoded. The index is complete and the decode is short, so index rank N stops
-corresponding to decoded frame N.
+The index is complete and the decode is short, so index rank N stops
+corresponding to decoded frame N. Measured on the suite's edit-list fixture,
+built by cutting a committed clip with `-ss 0.2 -c copy`: 50 packets
+demultiplexed either way, 5 of them flagged, 45 frames decoded by default and
+50 with the option set.
 
 The option clears the marks, and it also moves the timestamps themselves,
 because the edit list's shift is applied at demultiplex time. Either way the

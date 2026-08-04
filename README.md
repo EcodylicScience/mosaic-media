@@ -166,9 +166,27 @@ decode order. Only the `[io]` extra decodes and encodes in process, through
 `av`.
 
 That packet index is what makes seeking exact. `VideoReader` resolves the
-target's preceding keyframe from the index, seeks the container to that
-keyframe's timestamp, verifies the decoded landing, and counts frames forward,
-using each frame's own recorded timestamp throughout.
+target's preceding keyframe from the index and seeks the container to that
+keyframe's timestamp. A landing at or before that keyframe is expected --
+container seek granularity is coarser than the keyframe list on some formats --
+so the reader resolves where the decoder actually landed against the index and
+counts frames forward from there. A landing after the requested keyframe means
+the target's own references were skipped, and raises. Every step uses the
+frames' own recorded timestamps; nothing converts an index to a timestamp
+through an average rate.
+
+`VideoReader` holds to one contract:
+
+- A video the probe found analysis-ready reads cleanly: the reader does not
+  fail on it, and every index within `frame_count` returns the frame that
+  belongs to it.
+- A video it cannot faithfully deliver raises `MediaProbeError` naming the
+  frame, rather than returning a neighboring one.
+
+The verdict does not reach the reader, which carries no policy of its own, so
+choosing whether to open one is the caller's step: probe, read the analysis
+verdict, and open the derivative rather than the original where the verdict
+asks for one.
 
 Neither path uses OpenCV, for two reasons that matter if you are replacing a
 `cv2.VideoCapture` decode path:
@@ -374,6 +392,16 @@ Two exception types, both `RuntimeError` subclasses.
 
 `MediaProbeError` comes from the probe: no video stream, a missing file, or
 ffprobe failing or returning output that cannot be parsed.
+
+It also comes from `VideoReader`, which raises it rather than hand back a frame
+that is not the one asked for. A read loop can raise, not only the probe call
+before it. The reader's cases are a seek landing that cannot be resolved
+against the index, a delivered frame the index does not place at the index it
+is being returned under, a gap between consecutive decoded frames of a
+constant-rate source, and a read that ends before delivering every frame its
+window declares. All four report the same condition -- a source whose packets
+do not all decode -- reached from different directions, and all four name the
+frame. A source the analysis verdict accepted raises none of them.
 
 `TranscodeError` comes from the converter: ffmpeg failing, the run exceeding its
 timeout, a cancel callback asking it to stop, a destination that is refused, or

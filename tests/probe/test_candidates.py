@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mosaic_media import is_candidate_video
+from mosaic_media import VIDEO_EXTENSIONS, is_candidate_video
 
 
 def test_uppercase_extension_is_a_candidate() -> None:
@@ -15,20 +15,14 @@ def test_non_video_extension_is_not_a_candidate() -> None:
     assert not is_candidate_video(Path("index.csv"))
 
 
-def test_every_extension_the_intake_accepts_is_a_candidate() -> None:
-    # Mirrors VIDEO_EXTENSIONS in mosaic_app/src/uploads/store/grouping.ts.
-    intake = [
-        "mp4",
-        "m4v",
-        "mov",
-        "avi",
-        "mkv",
-        "webm",
-        "mts",
-        "m2ts",
-        "mpg",
-        "mpeg",
-        "wmv",
-    ]
-    for extension in intake:
-        assert is_candidate_video(Path(f"clip.{extension}"))
+def test_every_exported_extension_is_reachable_through_the_predicate() -> None:
+    # The set is exported and the predicate is the only way to consult it, so
+    # the two must agree on every member. They can disagree silently: the
+    # predicate lowercases the suffix it looks up but not the set, and
+    # `Path.suffix` always carries its leading dot, so a member spelled without
+    # a dot or with any uppercase would sit in the exported set and never match
+    # a real path. Derived from the set rather than from a list written out
+    # here, so a member added in either wrong form fails here.
+    assert VIDEO_EXTENSIONS
+    for extension in VIDEO_EXTENSIONS:
+        assert is_candidate_video(Path(f"clip{extension}")), extension
