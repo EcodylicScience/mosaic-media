@@ -8,9 +8,16 @@ The command selects the minimum operation that clears a target's reasons, never 
 blanket re-encode. A header that lies about timing needs a `-c copy` remux that
 regenerates timestamps; a `moov` at the tail needs `-movflags +faststart`; a
 supported stream trapped in an unopenable container needs a `-c copy` container
-rewrap; only a defect that breaks the pixel grid or the frame clock -- variable
-frame rate, rotation, non-square pixels, interlacing -- or a stream a browser
-cannot decode needs a real AV1 re-encode.
+rewrap; a defect that breaks the pixel grid or the frame clock -- variable frame
+rate, rotation, non-square pixels, interlacing -- a stream a browser cannot
+decode, or a codec whose frame correspondence is unverified needs a real AV1
+re-encode.
+
+A copy is escalated to a re-encode when it would not survive: the mp4 the
+converter writes must be able to carry the codec, and the source's packets must
+all decode. A copy carries packets forward untouched, so a source that loses
+frames to an edit list or to leading non-keyframes yields a derivative that loses
+them too.
 
 Policy is injected. `EncodingParameters` and the two shipped defaults are
 media-domain encoder settings; the browser policy lives in the `PlaybackProfile`
@@ -39,8 +46,10 @@ class Operation(StrEnum):
     REENCODE_AV1 = "reencode_av1"
 
 
-# Reasons a copy remux cannot fix: the pixel grid or the frame clock is wrong, or
-# the stream itself cannot be decoded or streamed economically. Each forces a real
+# Reasons a copy remux cannot fix: the pixel grid or the frame clock is wrong, the
+# stream itself cannot be decoded or streamed economically, or the codec is one
+# whose decoder is not measured to emit a frame per packet -- a copy would carry
+# that codec forward and the output would fire the same reason. Each forces a real
 # AV1 re-encode. Names are the real StreamReason / AnalysisReason literals.
 _REENCODE_STREAM_REASONS: frozenset[StreamReason] = frozenset(
     {
@@ -61,6 +70,50 @@ _REENCODE_ANALYSIS_REASONS: frozenset[AnalysisReason] = frozenset(
         "rotated",
         "non_square_pixels",
         "interlaced",
+        "unverified_frame_correspondence",
+    }
+)
+
+# Codecs the mp4 muxer carries through a stream copy. The converter always writes
+# mp4, so a copy remux preserving a codec absent from this set dies in the muxer
+# before a header is written -- "Could not find tag for codec ... not currently
+# supported in container" -- and the source can never be prepared for its target.
+# Such a copy escalates to a re-encode instead, which is the minimum operation
+# that still produces output passing the target's verdict.
+#
+# An allowlist rather than a denylist, because the two errors cost differently:
+# a codec missing from the set buys one unnecessary re-encode, while a codec
+# wrongly present buys a transcode that fails. Membership is measured against the
+# real muxer by tests/transcode/test_mp4_stream_copy.py, which muxes a real
+# sample of every codec the suite can produce and derives this set from the
+# outcome, so nothing joins it without a sample that carries.
+#
+# Plainly named because that test imports it, and not exported from the package.
+# It looks like FRAME_EXACT_CODECS -- both are frozensets of codec names, both
+# apparently about which codecs are acceptable -- and it is the opposite kind of
+# fact. That one is injected policy a consumer may widen after measuring a codec
+# this package has not; this one is a property of libavformat, changing when
+# ffmpeg changes rather than when a consumer's preferences do, and no consumer
+# can widen it because the muxer decides. Their safety properties are opposite
+# too: widening the trusted set degrades gracefully, while widening this one
+# asserts mp4 carries something it does not, which is the failing transcode
+# named above.
+#
+# There is a real consumer question this set appears to answer and does not: the
+# escalation carries no reason, so a caller cannot distinguish a re-encode the
+# verdict demanded from one the muxer forced. If that distinction is ever needed,
+# the answer is a reason on the command, not an exported constant a consumer
+# re-derives the selector from.
+MP4_STREAM_COPY_CODECS: frozenset[str] = frozenset(
+    {
+        "h264",
+        "hevc",
+        "av1",
+        "vp9",
+        "mpeg4",
+        "mjpeg",
+        "mpeg2video",
+        "mpeg1video",
     }
 )
 
@@ -138,7 +191,28 @@ def _target_reasons(verdict: Verdict, target: Target) -> frozenset[str]:
     return frozenset(verdict.stream_reasons)
 
 
-def _select_operation(verdict: Verdict, target: Target) -> Operation | None:
+def _select_operation(
+    verdict: Verdict, facts: MediaFacts, target: Target
+) -> Operation | None:
+    operation = _select_minimum_operation(verdict, target)
+    if operation is Operation.REENCODE_AV1 or operation is None:
+        return operation
+    if facts.codec_name not in MP4_STREAM_COPY_CODECS:
+        # The codec the copy would preserve cannot be muxed into the mp4 the
+        # converter writes.
+        return Operation.REENCODE_AV1
+    if facts.discard_flagged_packets > 0 or facts.leading_non_keyframe_frames > 0:
+        # A copy carries the source's packets, so a source whose packets do not
+        # all decode yields a derivative whose packets do not all decode. Only a
+        # re-encode materializes them. Muxability and deliverability are
+        # independent reasons to escalate; a copy must survive both.
+        return Operation.REENCODE_AV1
+    return operation
+
+
+def _select_minimum_operation(verdict: Verdict, target: Target) -> Operation | None:
+    """The lightest operation that clears `target`'s reasons, before the output
+    container's ability to carry the source codec is taken into account."""
     if target == "analysis":
         if verdict.analysis_reasons & _REENCODE_ANALYSIS_REASONS:
             return Operation.REENCODE_AV1
@@ -240,7 +314,13 @@ def _reencode_argv(
     *,
     allow_hardware: bool,
 ) -> tuple[str, ...]:
-    argv: list[str] = [*_BASE, "-i", str(source)]
+    # The decoder emits frames before the first keyframe only when asked, and the
+    # demuxer keeps edit-list packets only when told to ignore the edit list.
+    # Without both, the re-encode reproduces the source's own dropped frames.
+    input_flags: list[str] = ["-flags2", "+showall"]
+    if facts.discard_flagged_packets > 0:
+        input_flags.extend(["-ignore_editlist", "1"])
+    argv: list[str] = [*_BASE, *input_flags, "-i", str(source)]
     chain = _video_filters(facts)
     if chain is not None:
         argv.extend(["-vf", chain])
@@ -276,8 +356,13 @@ def build_command(
     allow_hardware: bool = False,
 ) -> TranscodeCommand | None:
     """The minimum ffmpeg command that clears `target`'s reasons, or None when the
-    file is already clean for that target."""
-    operation = _select_operation(verdict, target)
+    file is already clean for that target.
+
+    "Minimum" is bounded by what the output container accepts: a copy remux whose
+    codec mp4 cannot carry is escalated to a re-encode, because a command the
+    muxer refuses is not an operation at all.
+    """
+    operation = _select_operation(verdict, facts, target)
     if operation is None:
         return None
     # Only a source whose timing was never measured may have its timestamps

@@ -67,11 +67,15 @@ profile = PlaybackProfile(
 thresholds = Thresholds(drift_frame_periods=0.5)  # the rest keep defaults
 ```
 
-`Thresholds` carries every numeric limit the verdict applies, and
-`DEFAULT_THRESHOLDS` is `Thresholds()`: `drift_frame_periods=0.5` (how far a
-frame may sit from its uniform-grid position before the file counts as variable
-rate), `max_gop_bytes=524288`, `max_keyframe_interval_frames=200`,
-`truncation_duration_ratio=0.95`, `start_time_frame_periods=0.5`.
+`Thresholds` carries every limit the verdict applies, and `DEFAULT_THRESHOLDS`
+is `Thresholds()`: `drift_frame_periods=0.5` (how far a frame may sit from its
+uniform-grid position before the file counts as variable rate),
+`max_gop_bytes=524288`, `max_keyframe_interval_frames=200`,
+`truncation_duration_ratio=0.95`, `start_time_frame_periods=0.5`, and
+`frame_exact_codecs=FRAME_EXACT_CODECS` -- the codecs whose decoders are
+measured to emit one frame per packet, the one limit that is a set rather than
+a number. A codec outside it gets an analysis re-encode, so a consumer that has
+measured one this package omits injects a wider set rather than patching it.
 
 Run the work the verdict calls for:
 
@@ -200,7 +204,7 @@ every case; derivatives are separate artifacts.
 
 | Target | Trigger | `stream_transcode` |
 | --- | --- | --- |
-| Analysis | Any analysis reason: variable frame rate, unreliable timing metadata, rotation, non-square pixels, interlacing. | not applicable |
+| Analysis | Any analysis reason: variable frame rate, unreliable timing metadata, rotation, non-square pixels, interlacing, or a codec whose decoder is not measured to deliver one frame per packet. | not applicable |
 | Playback | A hard stream reason: the browser's rendering would disagree with the coordinate or time model -- unsupported container or codec, variable frame rate, rotation, non-square pixels, non-zero start time. | `required` |
 | Playback | A soft stream reason: it plays correctly, but not well or not everywhere. | `recommended` |
 
@@ -213,9 +217,15 @@ results has no advisory tier.
 
 The verdict selects the minimum operation rather than a blanket re-encode. A
 header that lies about timing gets a `-c copy` remux with corrected timestamps,
-a tail `moov` gets `-movflags +faststart`, a supported stream in an unopenable
-container gets a rewrap, and only a defect in the pixel grid or the frame clock
-gets a re-encode. Encoding runs on SVT-AV1, or on NVENC when the caller permits
+a tail `moov` gets `-movflags +faststart`, and a supported stream in an
+unopenable container gets a rewrap. A re-encode is what remains when no copy
+can clear the reasons: a defect in the pixel grid or the frame clock, a stream
+the browser cannot decode or cannot stream economically, or a codec whose frame
+correspondence is unverified. A copy that would clear its reasons is escalated
+to a re-encode anyway when it would not survive as a copy -- because the output
+container cannot carry the source codec, or because it would carry forward
+packets the source itself does not decode, leaving the derivative missing the
+same frames. Encoding runs on SVT-AV1, or on NVENC when the caller permits
 hardware and ffmpeg lists `av1_nvenc`. A listing proves the encoder was compiled
 in, not that a usable device is present, so permitting hardware on a machine
 without one fails at encoder startup rather than falling back.

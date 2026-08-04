@@ -28,6 +28,7 @@ from .probe.identity import (
 from .probe.policy import (
     CHROME_149,
     DEFAULT_THRESHOLDS,
+    FRAME_EXACT_CODECS,
     HARD_STREAM_REASONS,
     AnalysisReason,
     PlaybackProfile,
@@ -51,6 +52,7 @@ __all__ = [
     "CHROME_149",
     "DEFAULT_THRESHOLDS",
     "DRIFT_SAFETY",
+    "FRAME_EXACT_CODECS",
     "HARD_STREAM_REASONS",
     "IDENTITY_SCHEME",
     "TIMESTAMP_QUANTUM_SECONDS",

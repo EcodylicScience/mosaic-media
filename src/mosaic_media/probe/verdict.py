@@ -83,6 +83,8 @@ def derive(
     if not facts.progressive:
         stream.add("interlaced")
         analysis.add("interlaced")
+    if facts.codec_name not in thresholds.frame_exact_codecs:
+        analysis.add("unverified_frame_correspondence")
 
     if (
         facts.codec_name in profile.client_dependent_codecs

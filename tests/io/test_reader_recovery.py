@@ -12,6 +12,7 @@ from av.video.frame import VideoFrame
 
 from mosaic_media.io.reader import VideoReader
 from mosaic_media.probe.errors import MediaProbeError
+from mosaic_media.probe.policy import DEFAULT_THRESHOLDS
 from mosaic_media.probe.probe import probe_media
 from tests.helpers.indexes import index_for
 
@@ -298,3 +299,38 @@ def test_a_seek_restarts_the_delivery_count(clips: dict[str, Path]) -> None:
                 ok, _frame = reader.read()
                 if not ok:
                     break
+
+
+# One list, two tests. The guard below derives the expected set from it, so a
+# member added without a delivery case fails there -- which is what makes the
+# comment on FRAME_EXACT_CODECS true rather than aspirational.
+_MEASURED_CODECS = [
+    ("vp8_webm_clip", "vp8"),
+    ("vp9_webm_clip", "vp9"),
+    ("cfr_mp4_clip", "h264"),
+    ("hevc_clip", "hevc"),
+    ("corpus_gop12", "av1"),
+]
+
+
+@pytest.mark.parametrize(("fixture_name", "expected_codec"), _MEASURED_CODECS)
+def test_every_trusted_codec_delivers_one_frame_per_packet(
+    request: pytest.FixtureRequest, fixture_name: str, expected_codec: str
+) -> None:
+    # Every member of the shipped default, measured. Resolved by fixture name
+    # because the AV1 corpus is its own session fixture, not a `clips` key.
+    path = request.getfixturevalue(fixture_name)
+    facts = probe_media(path)
+    assert facts.codec_name == expected_codec
+    assert facts.codec_name in DEFAULT_THRESHOLDS.frame_exact_codecs
+    with VideoReader(path, facts=facts) as reader:
+        delivered = sum(1 for _index, _frame in reader)
+    assert delivered == facts.frame_count
+
+
+def test_the_trusted_set_is_exactly_what_the_suite_measures() -> None:
+    # Derived, not restated: the shipped default must equal the set the tests
+    # above actually exercise, so neither can drift from the other.
+    assert DEFAULT_THRESHOLDS.frame_exact_codecs == frozenset(
+        codec for _fixture_name, codec in _MEASURED_CODECS
+    )

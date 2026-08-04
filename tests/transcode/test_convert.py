@@ -358,6 +358,56 @@ def test_h264_in_avi_rewraps_into_a_supported_container(
     assert result.output_verdict.stream_transcode is None
 
 
+@requires_svtav1
+def test_a_source_starting_on_non_keyframes_rewraps_to_a_zero_start_time(
+    avi_starting_on_non_keyframes: Path, tmp_path: Path
+) -> None:
+    # Guard: the source's own start time is zero, so a non-zero one in the output
+    # is introduced by the rewrap rather than carried in from the source.
+    source_facts = probe_media(avi_starting_on_non_keyframes)
+    assert source_facts.start_time == 0.0
+    assert (
+        "unsupported_container"
+        in derive(source_facts, CHROME_149, DEFAULT_THRESHOLDS).stream_reasons
+    )
+
+    result = transcode(
+        avi_starting_on_non_keyframes,
+        tmp_path / "out.mp4",
+        "playback",
+        PLAYBACK_ENCODING,
+    )
+    assert result.performed
+    assert result.operation is Operation.REENCODE_AV1
+    assert result.output_facts is not None
+    # Pinned as a value, not merely as "the transcode returned": the acceptance
+    # probe rejects a non-zero start time, so a bare success assertion would pass
+    # for an output whose clock happened to land inside the threshold.
+    assert result.output_facts.start_time == 0.0
+    assert result.output_verdict is not None
+    assert "non_zero_start_time" not in result.output_verdict.stream_reasons
+
+
+@requires_svtav1
+def test_a_vp8_source_transcodes_for_analysis(
+    lying_header_vp8_webm: Path, tmp_path: Path
+) -> None:
+    # mp4 cannot carry vp8, so the copy remux the timing reason selects dies in
+    # the muxer and the source can never be prepared for analysis. The operation
+    # escalates to a re-encode, and the output must clear the reason it ran for.
+    source = lying_header_vp8_webm
+    source_verdict = derive(probe_media(source), CHROME_149, DEFAULT_THRESHOLDS)
+    assert "unreliable_timing_metadata" in source_verdict.analysis_reasons
+
+    result = transcode(source, tmp_path / "out.mp4", "analysis", ANALYSIS_ENCODING)
+    assert result.performed
+    assert result.operation is Operation.REENCODE_AV1
+    assert result.output_path is not None
+    assert result.output_path.is_file()
+    assert result.output_verdict is not None
+    assert result.output_verdict.analysis_transcode is None
+
+
 def test_rerunning_a_transcode_replaces_the_existing_output(
     clips: dict[str, Path], tmp_path: Path
 ) -> None:

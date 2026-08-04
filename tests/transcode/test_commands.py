@@ -182,6 +182,84 @@ def test_an_unsupported_container_with_a_supported_codec_is_a_container_remux() 
     assert "libsvtav1" not in command.argv
 
 
+def test_a_copy_that_would_drop_leading_packets_reencodes_instead() -> None:
+    # A stream copy drops a source's leading non-keyframes, so the derivative
+    # loses them and its clock keeps their offset. Only a re-encode can
+    # materialize them.
+    command = command_for(
+        "playback", PLAYBACK_ENCODING, container="avi", leading_non_keyframe_frames=24
+    )
+    assert command is not None
+    assert command.operation is Operation.REENCODE_AV1
+    assert arg_after(command.argv, "-flags2") == "+showall"
+
+
+def test_a_copy_that_would_drop_discard_packets_reencodes_instead() -> None:
+    command = command_for(
+        "analysis",
+        ANALYSIS_ENCODING,
+        declared_fps=1000.0,
+        declared_frame_count=0,
+        discard_flagged_packets=3,
+    )
+    assert command is not None
+    assert command.operation is Operation.REENCODE_AV1
+    assert arg_after(command.argv, "-ignore_editlist") == "1"
+
+
+def test_the_output_clock_is_never_shifted_to_hide_a_dropped_prefix() -> None:
+    # `-avoid_negative_ts make_zero` shifts the clock instead of keeping the
+    # packets, hiding the loss rather than avoiding it, and rebases every stream
+    # against the earliest timestamp in any of them -- for a source carrying AAC,
+    # the encoder delay ahead of its first audio sample -- moving a clean file's
+    # video off zero. Pinning its absence keeps a later simplification from
+    # reaching for it.
+    command = command_for("playback", PLAYBACK_ENCODING, container="avi")
+    assert command is not None
+    assert "-avoid_negative_ts" not in command.argv
+
+
+def test_an_unverified_codec_selects_a_reencode() -> None:
+    command = command_for("analysis", ANALYSIS_ENCODING, codec_name="indeo5")
+    assert command is not None
+    assert command.reasons == frozenset({"unverified_frame_correspondence"})
+    assert command.operation is Operation.REENCODE_AV1
+
+
+def test_a_copy_the_target_container_cannot_carry_reencodes_instead() -> None:
+    # mp4 has no tag for vp8, so a copy remux into it fails in the muxer before a
+    # header is written. The converter always writes mp4, so the minimum operation
+    # that produces an output passing the analysis verdict is a re-encode, not the
+    # copy the reason alone would select.
+    command = command_for(
+        "analysis",
+        ANALYSIS_ENCODING,
+        codec_name="vp8",
+        container="matroska,webm",
+        declared_fps=1000.0,
+        declared_frame_count=0,
+    )
+    assert command is not None
+    assert command.reasons == frozenset({"unreliable_timing_metadata"})
+    assert command.operation is Operation.REENCODE_AV1
+    assert "libsvtav1" in command.argv
+
+
+def test_a_copy_the_target_container_can_carry_stays_a_copy() -> None:
+    # The escalation above must not swallow the copy remux it sits next to: h264
+    # goes into mp4 unchanged, so the cheap operation stays selected.
+    command = command_for(
+        "analysis",
+        ANALYSIS_ENCODING,
+        codec_name="h264",
+        declared_fps=1000.0,
+        declared_frame_count=0,
+    )
+    assert command is not None
+    assert command.operation is Operation.REMUX_TIMEBASE
+    assert arg_after(command.argv, "-c") == "copy"
+
+
 def test_variable_frame_rate_drives_an_analysis_reencode() -> None:
     command = command_for(
         "analysis",

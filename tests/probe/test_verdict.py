@@ -240,3 +240,16 @@ def test_the_container_by_codec_matrix(
     container: str, codec: str, playable: bool
 ) -> None:
     assert verdict_for(container=container, codec_name=codec).playable is playable
+
+
+def test_a_codec_outside_the_trusted_set_needs_an_analysis_transcode() -> None:
+    verdict = derive(
+        replace(CLEAN, codec_name="indeo5"), CHROME_149, DEFAULT_THRESHOLDS
+    )
+    assert "unverified_frame_correspondence" in verdict.analysis_reasons
+    assert verdict.analysis_transcode == "required"
+
+
+def test_a_trusted_codec_needs_no_analysis_transcode() -> None:
+    verdict = derive(replace(CLEAN, codec_name="h264"), CHROME_149, DEFAULT_THRESHOLDS)
+    assert "unverified_frame_correspondence" not in verdict.analysis_reasons

@@ -88,10 +88,12 @@ ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=30:duration=2.6" \
 
 # hevc.mp4 -- 50 frames, 25 fps, GOP 25. HEVC exists here for the same reason
 # the H.264 clips do: libx265 is GPL, so the suite cannot encode it, but the
-# native decoder is LGPL and reads it with no extra dependency. It backs the
-# trusted-codec delivery test, so every member of the shipped set is measured
-# rather than assumed. hvc1 tagging is what players and browsers expect in mp4.
-# This clip has no pre-existing fixture recipe; it was written for that test.
+# native decoder is LGPL and reads it with no extra dependency. It backs two
+# measurements, so every member of both shipped sets is measured rather than
+# assumed: the trusted-codec delivery test, and the mp4 carriage test that muxes
+# it with `-c copy`. hvc1 tagging is what players and browsers expect in mp4.
+# This clip has no pre-existing fixture recipe; it was written for those tests,
+# and removing either one does not make it unused.
 ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=2" \
     -c:v libx265 -pix_fmt yuv420p -g 25 -tag:v hvc1 $Q hevc.mp4
 

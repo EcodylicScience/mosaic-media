@@ -23,6 +23,7 @@ AnalysisReason = Literal[
     "rotated",
     "non_square_pixels",
     "interlaced",
+    "unverified_frame_correspondence",
 ]
 
 StreamTranscode = Literal["required", "recommended"]
@@ -62,6 +63,30 @@ CHROME_149 = PlaybackProfile(
 )
 
 
+# Codecs whose decoder emits exactly one frame per packet bearing a distinct
+# presentation timestamp, once the reader's recovery options are in force. Every
+# member is measured by the delivery test in the reader recovery suite; a codec
+# is not admitted on decoder-family reasoning, because a wrong member's failure
+# mode is the silent one this design exists to remove -- a neighboring frame
+# returned as if it were the right one.
+#
+# Being unable to encode a codec here does not bar it: the h264 and hevc samples
+# are committed under tests/assets/ and read with no added dependency, since both
+# decoders are native and LGPL. Injected like every other policy in this module,
+# so a consumer measuring a codec this set omits adds it without touching this
+# package.
+#
+# Equal to CHROME_149.codecs today, and independent of it. One says a decoder
+# emits a frame per packet, the other says a browser can play the stream; they
+# coincide by accident and will diverge the first time a codec is trusted for
+# decode but unsupported by the profile, or the reverse. Do not fold either into
+# the other. The two literals are byte-identical and CHROME_149's comes first in
+# the file, so edit or patch this set by name, never by matching the literal: a
+# substitution that matches the literal silently rewrites the profile instead,
+# and the membership guard stays green because this set is untouched.
+FRAME_EXACT_CODECS: frozenset[str] = frozenset({"h264", "hevc", "av1", "vp9", "vp8"})
+
+
 @dataclass(frozen=True, slots=True)
 class Thresholds:
     """`max_gop_bytes` is the payload a seek may fetch before it costs 168 ms on
@@ -73,6 +98,7 @@ class Thresholds:
     max_keyframe_interval_frames: int = 200
     truncation_duration_ratio: float = 0.95
     start_time_frame_periods: float = 0.5
+    frame_exact_codecs: frozenset[str] = FRAME_EXACT_CODECS
 
 
 DEFAULT_THRESHOLDS = Thresholds()

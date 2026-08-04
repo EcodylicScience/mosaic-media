@@ -2174,9 +2174,15 @@ separate command. Expected: all clean. Fix findings; never suppress.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tests/
+git add tests/helpers/scans.py tests/io/test_multi.py \
+    tests/io/test_reader_recovery.py tests/transcode/test_convert.py
 git commit -m "Pin frame delivery and the scan-free read path"
 ```
+
+Name the paths rather than staging `tests/`. A directory argument stages
+whatever else happens to be modified there, which is how a change belonging to
+one task lands in another task's commit -- unreviewed, and under a message that
+does not describe it.
 
 ---
 
