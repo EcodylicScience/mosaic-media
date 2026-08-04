@@ -16,8 +16,7 @@ from pathlib import Path
 import pytest
 
 from mosaic_media import MediaFacts, probe_media
-from mosaic_media.io.index import SeekIndex, build_seek_index
-from mosaic_media.io.packets import scan_packets_in_process
+from mosaic_media.io.index import SeekIndex
 from tests.bench.harness import (
     DEFAULT_ROUNDS,
     Workload,
@@ -32,6 +31,7 @@ from tests.bench.support import (
     make_reader,
     sample_sorted,
 )
+from tests.helpers.indexes import index_for
 
 cv2 = pytest.importorskip("cv2", reason=CV2_IMPORTORSKIP_REASON)
 pytestmark = pytest.mark.bench
@@ -219,8 +219,7 @@ def test_gate_multi_video_junction_with_injected_facts(
 
     def setup() -> tuple[list[MediaFacts], list[SeekIndex]]:
         facts = probe_media(path)
-        packets, _source = scan_packets_in_process(path)
-        index = build_seek_index(packets)
+        index = index_for(path)
         return [facts, facts], [index, index]
 
     workload = Workload(

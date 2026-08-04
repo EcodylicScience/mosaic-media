@@ -178,7 +178,9 @@ class MultiVideoReader:
         if cached is not None:
             return cached
         packets, _source = scan_packets_in_process(self._segments[segment_index].path)
-        built = build_seek_index(packets)
+        built = build_seek_index(
+            packets, source="in_process", space="container_default"
+        )
         self._indices[segment_index] = built
         return built
 

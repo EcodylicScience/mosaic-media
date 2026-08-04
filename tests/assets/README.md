@@ -1,17 +1,25 @@
 # Committed media assets
 
-H.264 clips the suite needs but can no longer generate.
+H.264 and HEVC clips the suite needs but can no longer generate.
 
-FFmpeg's software H.264 encoders are `libx264` and `libx264rgb`, which are
-external and GPL-2.0-or-later, and `libopenh264`, which is external and not
-GPL; every other H.264 encoder is a hardware wrapper (`h264_nvenc`, `h264_qsv`,
-`h264_v4l2m2m`, `h264_vaapi`). The suite must run against the same LGPL FFmpeg
-the consumers deploy, which rules out the GPL two, and the Ubuntu system FFmpeg
-it runs against on development machines is built without `libopenh264`. No
-software H.264 encoder is available on both, so a machine without a suitable GPU
-has no way to produce these clips, and they are committed instead. Decoding is
-unaffected -- FFmpeg's H.264 and HEVC decoders are native and LGPL -- so these
-files are consumed with no extra dependency.
+FFmpeg's GPL software encoders for these codecs are `libx264`, `libx264rgb`, and
+`libx265`, all external and GPL-2.0-or-later. The suite must run against the
+same LGPL FFmpeg the consumers deploy, which rules out all three.
+
+Two non-GPL software encoders exist -- `libopenh264` for H.264 and `libkvazaar`
+for HEVC -- and neither rescues these clips. Neither is present in the Ubuntu
+system FFmpeg the suite runs against on development machines, so neither can
+generate a fixture there; and `libopenh264` is in any case built for real-time
+conferencing, its rate control offering `off`, `quality`, `bitrate`, `buffer`
+and `timestamp` with no constant-quality target, its input 8-bit 4:2:0 only
+(`yuv420p` and `yuvj420p`), and its profiles stopping at High, which is not
+what the deployment path wants for a permanent derivative. Every other encoder
+for either codec is a hardware wrapper (`h264_nvenc`, `h264_qsv`,
+`h264_v4l2m2m`, `h264_vaapi`, `hevc_nvenc`, `hevc_qsv`, `hevc_v4l2m2m`,
+`hevc_vaapi`), so a machine without a suitable GPU has no way to produce these
+clips, and they are committed instead. Decoding is unaffected either way --
+FFmpeg's H.264 and HEVC decoders are both native and LGPL -- so these files
+are consumed with no extra dependency.
 
 Everything else the fixtures need is still generated at test time: `libvpx`,
 `mjpeg`, `aac`, and `libsvtav1` are all non-GPL, and the `-c copy` remuxes
@@ -77,6 +85,29 @@ ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=2" \
 # no pre-existing fixture recipe; it was written for those tests.
 ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=30:duration=2.6" \
     -frames:v 48 -c:v libx264 -pix_fmt yuv420p -g 12 $Q h264_gop12.mp4
+
+# hevc.mp4 -- 50 frames, 25 fps, GOP 25. HEVC exists here for the same reason
+# the H.264 clips do: libx265 is GPL, so the suite cannot encode it, but the
+# native decoder is LGPL and reads it with no extra dependency. It backs the
+# trusted-codec delivery test, so every member of the shipped set is measured
+# rather than assumed. hvc1 tagging is what players and browsers expect in mp4.
+# This clip has no pre-existing fixture recipe; it was written for that test.
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=2" \
+    -c:v libx265 -pix_fmt yuv420p -g 25 -tag:v hvc1 $Q hevc.mp4
+
+# open_gop.mp4 -- 50 frames, 25 fps, GOP 12, open GOP with B-frames. Every
+# keyframe after the first is followed in decode order by pictures that precede
+# it in presentation order (measured: the keyframe at pts 0.480 is followed by
+# pts 0.400 and 0.440). That is the shape a decoder legitimately suppresses
+# after a seek, so it is the case that decides whether emitting frames before
+# the first keyframe is safe to enable unconditionally, and whether the reader's
+# presentation-order keyframe resolution lands frame-exact where a naive seek to
+# the nearest keyframe does not. scenecut=0 keeps the GOP boundaries where -g
+# puts them, so the structure is deterministic rather than content-dependent.
+# This clip has no pre-existing fixture recipe; it was written for those tests.
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=2" \
+    -c:v libx264 -pix_fmt yuv420p -g 12 -bf 2 -x264-params open-gop=1:scenecut=0 \
+    $Q open_gop.mp4
 ```
 
 ## Regenerating

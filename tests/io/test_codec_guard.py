@@ -33,8 +33,9 @@ def _decode_one(path: Path) -> int:
 
 
 def test_av_decodes_system_ffmpeg_h264(tmp_path: Path) -> None:
-    # H.264 is read, never written: the decoder is native and LGPL, while every
-    # software encoder for it is GPL. The clip is committed for that reason.
+    # H.264 is read, never written: the decoder is native and LGPL, while the
+    # software H.264 encoders this build carries are GPL. The clip is committed
+    # for that reason.
     clip = asset("cfr.mp4", tmp_path / "h264.mp4")
     assert _decode_one(clip) > 0, _REMEDY
 

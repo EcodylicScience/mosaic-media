@@ -48,6 +48,25 @@ class MediaFacts:
     apart from a file whose content actually changed. Required like the identity
     values, and empty for the same reason: a source the probe never saw was
     minted by nothing.
+
+    `discard_flagged_packets` and `leading_non_keyframe_frames` count what a
+    default decode would not turn into frames for reasons visible at
+    demultiplex time: the first are packets the demuxer marked "do not
+    present", the second are frames preceding the first keyframe, which have no
+    reference picture. Both are recoverable by the reader, and both tell command
+    construction that a stream copy would lose them. Neither is a defect on its
+    own.
+
+    The units differ and the names say so. `discard_flagged_packets` counts
+    packets. `leading_non_keyframe_frames` counts frames in this model's sense,
+    one per distinct presentation timestamp, the same unit `frame_count` uses --
+    so a container carrying several packets at one timestamp contributes one,
+    and the count cannot disagree with the seek index's keyframe ranks.
+
+    `leading_non_keyframe_frames` is 0 for a stream whose packets carry no
+    timestamps. Such a stream has no presentation order to count in, and its
+    verdict routes it to a timestamp-generating remux through
+    `unreliable_timing_metadata` regardless.
     """
 
     container: str
@@ -75,6 +94,8 @@ class MediaFacts:
     moov_at_start: bool | None
     max_keyframe_interval_frames: int
     max_gop_bytes: int
+    discard_flagged_packets: int
+    leading_non_keyframe_frames: int
     timing_measured: bool
     video_uuid: str
     content_digest: str

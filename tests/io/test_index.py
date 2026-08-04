@@ -1,5 +1,6 @@
 from mosaic_media.io.index import build_seek_index
 from mosaic_media.probe.ffprobe import Packet
+from tests.helpers.indexes import index_of
 
 
 def _cfr_packets(count: int, gop: int) -> tuple[Packet, ...]:
@@ -11,7 +12,7 @@ def _cfr_packets(count: int, gop: int) -> tuple[Packet, ...]:
 
 
 def test_frame_times_are_presentation_order_ascending() -> None:
-    index = build_seek_index(_cfr_packets(40, 12))
+    index = index_of(_cfr_packets(40, 12))
     assert index.frame_count == 40
     assert list(index.frame_times) == sorted(index.frame_times)
 
@@ -25,14 +26,14 @@ def test_frame_times_recovered_from_decode_order_with_reordering() -> None:
         Packet(time=0.10, size=100, keyframe=True, pos=200),
         Packet(time=0.30, size=100, keyframe=False, pos=300),
     )
-    index = build_seek_index(packets)
+    index = index_of(packets)
     assert index.frame_times == (0.0, 0.10, 0.20, 0.30)
     # The keyframe at presentation time 0.10 is presentation frame 1.
     assert index.keyframe_indices == (0, 1)
 
 
 def test_preceding_keyframe_returns_index_and_timestamp() -> None:
-    index = build_seek_index(_cfr_packets(40, 12))
+    index = index_of(_cfr_packets(40, 12))
     # Frame 15's preceding keyframe is frame 12 at time 12/30 = 0.4.
     keyframe_index, keyframe_time = index.preceding_keyframe(15)
     assert keyframe_index == 12
@@ -44,7 +45,7 @@ def test_preceding_keyframe_returns_index_and_timestamp() -> None:
 
 
 def test_preceding_keyframe_rejects_out_of_range() -> None:
-    index = build_seek_index(_cfr_packets(40, 12))
+    index = index_of(_cfr_packets(40, 12))
     import pytest
 
     with pytest.raises(IndexError):
@@ -54,14 +55,14 @@ def test_preceding_keyframe_rejects_out_of_range() -> None:
 
 
 def test_group_by_gop_partitions_by_shared_keyframe() -> None:
-    index = build_seek_index(_cfr_packets(40, 12))
+    index = index_of(_cfr_packets(40, 12))
     # Targets in GOPs [0,12), [12,24), [24,36), [36,40).
     groups = index.group_by_gop([5, 3, 13, 20, 25, 5])
     assert groups == [[3, 5], [13, 20], [25]]
 
 
 def test_group_by_gop_empty_input() -> None:
-    index = build_seek_index(_cfr_packets(40, 12))
+    index = index_of(_cfr_packets(40, 12))
     assert index.group_by_gop([]) == []
 
 
@@ -70,7 +71,7 @@ def test_stream_without_keyframe_flags_seeks_from_start() -> None:
         Packet(time=index / 25.0, size=100, keyframe=False, pos=index)
         for index in range(10)
     )
-    index = build_seek_index(packets)
+    index = index_of(packets)
     assert index.preceding_keyframe(7) == (0, 0.0)
     assert index.group_by_gop([2, 5, 7]) == [[2, 5, 7]]
 
@@ -85,7 +86,7 @@ def test_duplicate_presentation_timestamps_collapse_to_one_frame() -> None:
         Packet(time=0.04, size=100, keyframe=False, pos=1020),
         Packet(time=0.08, size=100, keyframe=False, pos=1120),
     )
-    index = build_seek_index(packets)
+    index = index_of(packets)
     assert index.frame_count == 3  # not 4
     assert index.frame_times == (0.0, 0.04, 0.08)
     assert index.keyframe_indices == (0,)
@@ -102,7 +103,7 @@ def test_dedup_matches_measure_timing_distinct_timestamp_count() -> None:
         Packet(time=0.08, size=100, keyframe=True, pos=220),
     )
     distinct = len({packet.time for packet in packets})
-    assert build_seek_index(packets).frame_count == distinct
+    assert index_of(packets).frame_count == distinct
 
 
 def test_a_distinct_timestamp_is_a_keyframe_when_any_packet_at_it_is() -> None:
@@ -111,5 +112,15 @@ def test_a_distinct_timestamp_is_a_keyframe_when_any_packet_at_it_is() -> None:
         Packet(time=0.0, size=500, keyframe=True, pos=100),  # keyframe shares t=0
         Packet(time=0.04, size=100, keyframe=False, pos=600),
     )
-    index = build_seek_index(packets)
+    index = index_of(packets)
     assert index.keyframe_indices == (0,)
+
+
+def test_an_index_records_the_scanner_and_space_it_was_built_in() -> None:
+    packets = (
+        Packet(time=0.0, size=10, keyframe=True, pos=0),
+        Packet(time=0.04, size=10, keyframe=False, pos=10),
+    )
+    index = build_seek_index(packets, source="in_process", space="container_default")
+    assert index.source == "in_process"
+    assert index.space == "container_default"

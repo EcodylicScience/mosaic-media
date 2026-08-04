@@ -8,6 +8,19 @@ in float seconds via the stream time base, the demuxer's trailing flush packet
 measurement scanner; this function feeds seeking only, and the two need not
 agree packet-for-packet on containers where libavformat synthesizes pts that
 ffprobe reports as absent.
+
+`ignore_edit_list` opens the container with libavformat's `ignore_editlist`
+option. The demuxer delivers every packet either way -- a container edit list
+does not withhold packets, it marks them "do not present" -- but a default
+decode honors that mark and emits fewer frames than this scan has timestamps.
+Measured on one such source: 50 packets demultiplexed, 13 flagged, 37 frames
+decoded. The index is complete and the decode is short, so index rank N stops
+corresponding to decoded frame N.
+
+The option clears the marks, and it also moves the timestamps themselves,
+because the edit list's shift is applied at demultiplex time. Either way the
+consequence is the same: a source carrying the flag must have its index built
+in the space its decode runs in, so both are gated or neither is.
 """
 
 from pathlib import Path
@@ -20,12 +33,13 @@ from ..probe.ffprobe import Packet, TimestampSource
 
 
 def scan_packets_in_process(
-    path: Path,
+    path: Path, *, ignore_edit_list: bool = False
 ) -> tuple[tuple[Packet, ...], TimestampSource]:
     pts_packets: list[Packet] = []
     dts_packets: list[Packet] = []
+    options = {"ignore_editlist": "1"} if ignore_edit_list else {}
     try:
-        container = av.open(str(path))
+        container = av.open(str(path), options=options)
     except av.error.FFmpegError as exc:
         message = f"failed to open {path}: {exc}"
         raise MediaProbeError(message) from exc
@@ -50,12 +64,24 @@ def scan_packets_in_process(
             if packet.pts is not None:
                 seconds = float(packet.pts * time_base)
                 pts_packets.append(
-                    Packet(time=seconds, size=size, keyframe=keyframe, pos=position)
+                    Packet(
+                        time=seconds,
+                        size=size,
+                        keyframe=keyframe,
+                        pos=position,
+                        discard=bool(packet.is_discard),
+                    )
                 )
             if packet.dts is not None:
                 seconds = float(packet.dts * time_base)
                 dts_packets.append(
-                    Packet(time=seconds, size=size, keyframe=keyframe, pos=position)
+                    Packet(
+                        time=seconds,
+                        size=size,
+                        keyframe=keyframe,
+                        pos=position,
+                        discard=bool(packet.is_discard),
+                    )
                 )
     # Whole-file fallback, mirroring scan_packets: dts only when NO packet in
     # the stream carried pts. Never a per-packet mix.

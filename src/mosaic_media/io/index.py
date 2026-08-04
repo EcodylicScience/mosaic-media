@@ -13,14 +13,24 @@ keyframe and counting frames forward to the target -- lives in reader.py.
 import bisect
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from ..probe.ffprobe import Packet
+
+# Which scanner produced an index, and which timestamp space it holds. The two
+# scanners disagree where libavformat synthesizes presentation timestamps that
+# ffprobe reports as absent, and ignoring an edit list moves which picture sits
+# at each timestamp, so an index is only usable by a decode opened the same way.
+IndexSource = Literal["probe", "in_process"]
+IndexSpace = Literal["container_default", "edit_list_ignored"]
 
 
 @dataclass(frozen=True, slots=True)
 class SeekIndex:
     frame_times: tuple[float, ...]
     keyframe_indices: tuple[int, ...]
+    source: IndexSource
+    space: IndexSpace
 
     @property
     def frame_count(self) -> int:
@@ -63,7 +73,12 @@ class SeekIndex:
         return groups
 
 
-def build_seek_index(packets: tuple[Packet, ...]) -> SeekIndex:
+def build_seek_index(
+    packets: tuple[Packet, ...],
+    *,
+    source: IndexSource,
+    space: IndexSpace,
+) -> SeekIndex:
     """Build a SeekIndex from a packet scan, deduplicating presentation
     timestamps consistently with measure_timing (sorted({packet.time ...})).
 
@@ -74,10 +89,20 @@ def build_seek_index(packets: tuple[Packet, ...]) -> SeekIndex:
     by construction. A distinct timestamp is a keyframe timestamp when any
     packet bearing it is keyframe-flagged, so a preceding duplicate can no
     longer shift a keyframe's rank.
+
+    `source` and `space` are required and keyword-only so no caller acquires a
+    wrong default silently; they record which scanner built the packets and
+    which timestamp space they were read in, so a decode opened a different way
+    can be rejected rather than seeking against a mismatched index.
     """
     keyframe_times = {packet.time for packet in packets if packet.keyframe}
     frame_times = tuple(sorted({packet.time for packet in packets}))
     keyframe_indices = tuple(
         rank for rank, time in enumerate(frame_times) if time in keyframe_times
     )
-    return SeekIndex(frame_times=frame_times, keyframe_indices=keyframe_indices)
+    return SeekIndex(
+        frame_times=frame_times,
+        keyframe_indices=keyframe_indices,
+        source=source,
+        space=space,
+    )

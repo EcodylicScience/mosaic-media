@@ -47,3 +47,21 @@ def test_probe_of_a_truncated_file_measures_a_short_duration(
 
 def test_a_long_gop_file_exceeds_the_frames_guard(long_gop_clip: Path) -> None:
     assert probe_media(long_gop_clip).max_keyframe_interval_frames > 200
+
+
+def test_a_source_opening_on_a_keyframe_counts_no_undeliverable_packets(
+    clips: dict[str, Path],
+) -> None:
+    facts = probe_media(clips["cfr_mp4"])
+    assert facts.discard_flagged_packets == 0
+    assert facts.leading_non_keyframe_frames == 0
+
+
+def test_a_source_cut_mid_stream_counts_its_leading_frames(
+    avi_starting_on_non_keyframes: Path,
+) -> None:
+    # The fixture drops the committed clip's leading keyframe, leaving 24
+    # non-keyframes ahead of the keyframe at 25.
+    facts = probe_media(avi_starting_on_non_keyframes)
+    assert facts.leading_non_keyframe_frames == 24
+    assert facts.discard_flagged_packets == 0

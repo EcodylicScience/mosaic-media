@@ -3,15 +3,15 @@ from pathlib import Path
 import pytest
 
 import mosaic_media.io.multi as multi_module
-from mosaic_media.io.index import SeekIndex, build_seek_index
+from mosaic_media.io.index import SeekIndex
 from mosaic_media.io.multi import MultiVideoReader
-from mosaic_media.io.packets import scan_packets_in_process
 from mosaic_media.io.reader import VideoReader
 from mosaic_media.probe.errors import MediaProbeError
 from mosaic_media.probe.facts import MediaFacts
 from mosaic_media.probe.ffprobe import Packet, TimestampSource
 from mosaic_media.probe.probe import probe_media
 from tests.helpers.corpus import decode_md5s, frame_md5, generate_video
+from tests.helpers.indexes import index_for
 
 
 def _failing_probe(path: Path) -> MediaFacts:
@@ -249,10 +249,7 @@ def test_injected_indices_suppress_the_packet_scan(
 ) -> None:
     first, second = two_clips
     pre_facts = [probe_media(first), probe_media(second)]
-    pre_indices = [
-        build_seek_index(scan_packets_in_process(first)[0]),
-        build_seek_index(scan_packets_in_process(second)[0]),
-    ]
+    pre_indices = [index_for(first), index_for(second)]
 
     def failing_scan(path: Path) -> tuple[tuple[Packet, ...], TimestampSource]:
         message = f"packet scan must not run for {path}"

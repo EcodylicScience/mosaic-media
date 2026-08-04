@@ -12,8 +12,8 @@ detail. A call site that requests `libx264` breaks that. It fails at fixture
 creation, before any code under test is reached, and the failure reads like a
 probe regression rather than a missing encoder.
 
-Media that must genuinely be H.264 is committed under `tests/assets/` instead;
-consuming it needs only the native decoder.
+Media that must genuinely be H.264 or HEVC is committed under `tests/assets/`
+instead; consuming it needs only the native decoder.
 
 The scan is over string literals, not lines: an encoder is requested as a bare
 name (`"-c:v", "libx264"` split across lines, `add_stream("libx264")`, a keyword

@@ -4,11 +4,31 @@ from pathlib import Path
 
 from .boxes import moov_at_start
 from .facts import MediaFacts
-from .ffprobe import prober_version, read_header, scan_packets
+from .ffprobe import Packet, prober_version, read_header, scan_packets
 from .gop import measure_gop
 from .identity import IDENTITY_SCHEME, mint_identity
 from .policy import DEFAULT_THRESHOLDS, Thresholds
 from .timing import measure_timing
+
+
+def _leading_non_keyframe_frames(packets: tuple[Packet, ...]) -> int:
+    """Frames preceding the first keyframe, in presentation order.
+
+    A frame is a distinct presentation timestamp, the unit frame_count uses, so
+    a container carrying several packets at one timestamp contributes one. A
+    distinct timestamp counts as a keyframe timestamp when any packet bearing it
+    is keyframe-flagged, matching build_seek_index, so this count and the index's
+    keyframe ranks cannot disagree.
+
+    Zero for a stream with no keyframe flags, which decodes from its first
+    packet, and zero for a timestampless stream, whose packets all carry the 0.0
+    placeholder and therefore have no presentation order to count in.
+    """
+    keyframe_times = {packet.time for packet in packets if packet.keyframe}
+    if not keyframe_times:
+        return 0
+    first_keyframe_time = min(keyframe_times)
+    return len({packet.time for packet in packets if packet.time < first_keyframe_time})
 
 
 def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> MediaFacts:
@@ -75,6 +95,8 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
         moov_at_start=moov_at_start(path),
         max_keyframe_interval_frames=gop.max_keyframe_interval_frames,
         max_gop_bytes=gop.max_gop_bytes,
+        discard_flagged_packets=sum(1 for packet in packets if packet.discard),
+        leading_non_keyframe_frames=_leading_non_keyframe_frames(packets),
         timing_measured=timing_measured,
         video_uuid=identity.video_uuid,
         content_digest=identity.content_digest,

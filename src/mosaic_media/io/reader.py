@@ -175,7 +175,9 @@ class VideoReader:
     def _ensure_index(self) -> SeekIndex:
         if self._index is None:
             packets, _source = scan_packets_in_process(self._path)
-            self._index = build_seek_index(packets)
+            self._index = build_seek_index(
+                packets, source="in_process", space="container_default"
+            )
         return self._index
 
     def _ensure_ready(self) -> _Geometry:

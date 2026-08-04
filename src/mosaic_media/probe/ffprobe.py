@@ -86,12 +86,17 @@ class Packet:
     `mosaic_media.io.packets` mirrors this one and does not populate it.
     Identity is minted once by the probe at ingestion and never by the reader,
     so the io layer has no reason to pay for the payload read.
+
+    `discard` is the demuxer's "do not present" flag, set from a container edit
+    list. The packet is real and its picture is decodable; the demuxer is saying
+    the container asked for it not to be shown.
     """
 
     time: float
     size: int
     keyframe: bool
     pos: int
+    discard: bool = False
     data_hash: str = ""
 
 
@@ -432,6 +437,7 @@ def scan_packets(
         size = int(size_text)
         pos = int(pos_text) if pos_text.lstrip("-").isdigit() else -1
         keyframe = "K" in flags
+        discard = "D" in flags
         if columns[0] not in _ABSENT:
             pts_packets.append(
                 Packet(
@@ -439,6 +445,7 @@ def scan_packets(
                     size=size,
                     keyframe=keyframe,
                     pos=pos,
+                    discard=discard,
                     data_hash=data_hash,
                 )
             )
@@ -449,6 +456,7 @@ def scan_packets(
                     size=size,
                     keyframe=keyframe,
                     pos=pos,
+                    discard=discard,
                     data_hash=data_hash,
                 )
             )
@@ -459,6 +467,7 @@ def scan_packets(
                     size=size,
                     keyframe=keyframe,
                     pos=pos,
+                    discard=discard,
                     data_hash=data_hash,
                 )
             )
