@@ -15,6 +15,7 @@ StreamReason = Literal[
     "moov_not_at_start",
     "large_seek_payload",
     "sparse_keyframes",
+    "presentation_timing_requires_decode",
 ]
 
 AnalysisReason = Literal[
@@ -24,6 +25,7 @@ AnalysisReason = Literal[
     "non_square_pixels",
     "interlaced",
     "unverified_frame_correspondence",
+    "presentation_timing_requires_decode",
 ]
 
 StreamTranscode = Literal["required", "recommended"]
@@ -31,6 +33,11 @@ StreamTranscode = Literal["required", "recommended"]
 # A hard reason means the browser's rendering disagrees with our coordinate or
 # time model. A soft reason means the video plays correctly, but not well, or
 # not everywhere.
+#
+# Timing assigned to the wrong pictures breaks the mapping from frame index to
+# time, which is what a hard reason means. Every source that fires it today also
+# fires unsupported_container, so nothing in the corpus changes classification --
+# which is why the membership is decided here rather than left to be noticed.
 HARD_STREAM_REASONS: frozenset[StreamReason] = frozenset(
     {
         "unsupported_container",
@@ -39,6 +46,7 @@ HARD_STREAM_REASONS: frozenset[StreamReason] = frozenset(
         "rotated",
         "non_square_pixels",
         "non_zero_start_time",
+        "presentation_timing_requires_decode",
     }
 )
 

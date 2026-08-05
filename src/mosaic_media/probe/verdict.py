@@ -117,6 +117,16 @@ def derive(
         # analysis reason, so without this one the file reports as already
         # analysis-clean and the refusal that follows is never reached.
         analysis.add("unreliable_timing_metadata")
+    if facts.timing_source == "synthesized" or (
+        facts.coded_reordering_depth > 0
+        and facts.timing_source in ("decode", "synthesized", "absent")
+    ):
+        # A stream copy cannot produce correct presentation timing here. With
+        # invented timestamps the packet-to-picture mapping is unknown; with
+        # reordering and no presentation timestamps the order is. A decoder
+        # recovers both and a copy decodes nothing.
+        analysis.add("presentation_timing_requires_decode")
+        stream.add("presentation_timing_requires_decode")
 
     stream_reasons = frozenset(stream)
     if stream_reasons & HARD_STREAM_REASONS:

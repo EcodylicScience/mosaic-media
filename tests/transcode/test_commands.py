@@ -8,6 +8,7 @@ import pytest
 
 from mosaic_media.probe.ffprobe import TimingSource
 from mosaic_media.probe.policy import CHROME_149, DEFAULT_THRESHOLDS
+from mosaic_media.probe.probe import probe_media
 from mosaic_media.probe.verdict import derive
 from mosaic_media.transcode import commands as commands_module
 from mosaic_media.transcode.commands import (
@@ -19,6 +20,8 @@ from mosaic_media.transcode.commands import (
     TranscodeCommand,
     build_command,
 )
+
+from tests.helpers.media_fixtures import requires_svtav1
 
 # The 34-field clean baseline lives once, in the copied probe suite; reuse it
 # instead of restating it (repo precedent: tests/probe/test_sequence.py imports
@@ -369,3 +372,99 @@ def test_analysis_and_playback_targets_are_independent() -> None:
     playback = command_for("playback", PLAYBACK_ENCODING, moov_at_start=False)
     assert playback is not None
     assert playback.operation is Operation.REMUX_FASTSTART
+
+
+@pytest.mark.parametrize(
+    ("target", "encoding"),
+    [("analysis", ANALYSIS_ENCODING), ("playback", PLAYBACK_ENCODING)],
+)
+def test_a_source_needing_a_decode_takes_a_re_encode_on_both_targets(
+    target: Target, encoding: EncodingParameters
+) -> None:
+    # Both copy remuxes reach the defect: the analysis target through the
+    # timebase remux and the playback target through the container remux. A
+    # reason present in only one set leaves the other derivative mistimed.
+    command = command_for(
+        target, encoding, timing_source="synthesized", container="obu"
+    )
+    assert command is not None
+    assert command.operation is Operation.REENCODE_AV1
+
+
+# Both derivatives, each with its own encoding. Annotated rather than written
+# inline at each loop, so `target` keeps its literal type instead of widening to
+# `str` where `build_command` will not accept it.
+BOTH_TARGETS: tuple[tuple[Target, EncodingParameters], ...] = (
+    ("analysis", ANALYSIS_ENCODING),
+    ("playback", PLAYBACK_ENCODING),
+)
+
+
+@requires_svtav1
+def test_an_ordinary_bare_av1_stream_is_routed_to_a_decode(
+    natural_obu_clip: Path, tmp_path: Path
+) -> None:
+    # The operation, not the target. Every fixture here already reads
+    # `analysis_transcode == "required"` before this task, so asserting the
+    # target proves nothing; what this reason changes is which command is built.
+    facts = probe_media(natural_obu_clip)
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    assert "presentation_timing_requires_decode" in verdict.analysis_reasons
+    for target, encoding in BOTH_TARGETS:
+        command = build_command(
+            verdict,
+            facts,
+            target,
+            natural_obu_clip,
+            tmp_path / f"{target}.mp4",
+            encoding=encoding,
+        )
+        assert command is not None
+        assert command.operation is Operation.REENCODE_AV1
+
+
+def test_a_containerized_source_carrying_decode_order_is_routed_to_a_decode(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # The corpus's only containerized instance, and the closest to the class this
+    # reason exists for: real container timing, but decode timestamps only, and a
+    # bitstream that holds pictures back. Its transcode target already reads
+    # required for an unrelated reason -- a header declaring twice the measured
+    # rate and frame count -- so the operation is what discriminates here.
+    path = clips["no_pts_avi"]
+    facts = probe_media(path)
+    assert facts.timing_source == "decode"
+    assert facts.coded_reordering_depth > 0
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    assert "presentation_timing_requires_decode" in verdict.analysis_reasons
+    for target, encoding in BOTH_TARGETS:
+        command = build_command(
+            verdict, facts, target, path, tmp_path / f"{target}.mp4", encoding=encoding
+        )
+        assert command is not None
+        assert command.operation is Operation.REENCODE_AV1
+
+
+def test_a_rate_stating_reordered_raw_stream_is_routed_to_a_decode(
+    raw_hevc_clip: Path, tmp_path: Path
+) -> None:
+    # The HEVC counterpart of the reordered H.264 fixture: absent timing, a
+    # reordering depth of 2, and a rate its bitstream states, so the refusal that
+    # follows does not reach it. Only the analysis target discriminates -- the
+    # playback one already selects a re-encode because the raw container cannot
+    # be copied into mp4.
+    facts = probe_media(raw_hevc_clip)
+    assert facts.timing_source == "absent"
+    assert facts.coded_reordering_depth > 0
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    assert "presentation_timing_requires_decode" in verdict.analysis_reasons
+    command = build_command(
+        verdict,
+        facts,
+        "analysis",
+        raw_hevc_clip,
+        tmp_path / "analysis.mp4",
+        encoding=ANALYSIS_ENCODING,
+    )
+    assert command is not None
+    assert command.operation is Operation.REENCODE_AV1

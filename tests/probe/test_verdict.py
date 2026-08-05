@@ -279,3 +279,46 @@ def test_a_codec_outside_the_trusted_set_needs_an_analysis_transcode() -> None:
 def test_a_trusted_codec_needs_no_analysis_transcode() -> None:
     verdict = derive(replace(CLEAN, codec_name="h264"), CHROME_149, DEFAULT_THRESHOLDS)
     assert "unverified_frame_correspondence" not in verdict.analysis_reasons
+
+
+def test_an_invented_timing_source_cannot_be_copy_remuxed() -> None:
+    # A copy carries the packets forward, and the packet-to-picture mapping is
+    # exactly what no measurement over packets can establish. Only a decode can.
+    facts = replace(CLEAN, timing_source="synthesized")
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    assert "presentation_timing_requires_decode" in verdict.analysis_reasons
+    assert "presentation_timing_requires_decode" in verdict.stream_reasons
+    assert verdict.playable is False
+
+
+@pytest.mark.parametrize("timing_source", ["decode", "synthesized", "absent"])
+def test_reordering_without_presentation_timestamps_requires_a_decode(
+    timing_source: TimingSource,
+) -> None:
+    # A decoder recovers presentation order from the bitstream's picture order.
+    # A copy does not decode, so it labels the pictures in the order they arrive.
+    #
+    # The measured values are cleared alongside an unsupplied provenance, because
+    # the probe sets them to placeholders whenever the file supplied no timing.
+    # Facts mixing an unsupplied source with measured values model a state the
+    # probe never mints, which this suite forbids elsewhere for the same reason.
+    cleared = (
+        {"fps": 0.0, "duration": 0.0, "constant_frame_rate": False}
+        if timing_source == "absent"
+        else {}
+    )
+    facts = replace(
+        CLEAN, timing_source=timing_source, coded_reordering_depth=2, **cleared
+    )
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    assert "presentation_timing_requires_decode" in verdict.analysis_reasons
+
+
+def test_reordering_with_presentation_timestamps_is_left_alone() -> None:
+    # The ordinary containerized case, which is most of the corpus. Real
+    # presentation timestamps already carry the order, so firing here would
+    # re-encode files that are correct.
+    facts = replace(CLEAN, timing_source="presentation", coded_reordering_depth=2)
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    assert "presentation_timing_requires_decode" not in verdict.analysis_reasons
+    assert "presentation_timing_requires_decode" not in verdict.stream_reasons

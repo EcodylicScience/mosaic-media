@@ -577,7 +577,7 @@ from tests.helpers.media_fixtures import (
 
 # Verified by putting non-uniform timing through each format and reading it back:
 # timing a file supplies survives, timing a demultiplexer invents is replaced by a
-# uniform grid. The recipe is recorded beside _INVENTED_TIMING_CONTAINERS in
+# uniform grid. The recipe is recorded beside INVENTED_TIMING_CONTAINERS in
 # mosaic_media/probe/ffprobe.py, which is where it stays reachable.
 CLASSIFICATIONS: list[tuple[TimestampSource, str, TimingSource]] = [
     ("pts", "mov,mp4,m4a,3gp,3g2,mj2", "presentation"),
@@ -680,7 +680,7 @@ TimingSource = Literal["presentation", "decode", "synthesized", "absent"]
 # list by measuring rather than by reasoning about what a container is: m4v and
 # ivf are bare streams that nonetheless carry real per-picture timing, and avi
 # carries genuine timing through the decode-timestamp path.
-_INVENTED_TIMING_CONTAINERS = frozenset(
+INVENTED_TIMING_CONTAINERS = frozenset(
     {"obu", "mpegvideo", "yuv4mpegpipe", "h263", "jpeg_pipe"}
 )
 
@@ -696,7 +696,7 @@ def timing_source_for(source: TimestampSource, container: str) -> TimingSource:
     """
     if source == "none":
         return "absent"
-    if container in _INVENTED_TIMING_CONTAINERS:
+    if container in INVENTED_TIMING_CONTAINERS:
         return "synthesized"
     return "presentation" if source == "pts" else "decode"
 
@@ -1238,22 +1238,127 @@ from mosaic_media.probe.verdict import derive
 def test_an_ordinary_bare_av1_stream_is_routed_to_a_decode(
     natural_obu_clip: Path,
 ) -> None:
-    # The provenance defect on its own. Task 5 pinned that this file classifies
-    # as synthesized and that its frame count is right; what matters here is that
-    # the verdict acts on it.
-    verdict = derive(probe_media(natural_obu_clip), CHROME_149, DEFAULT_THRESHOLDS)
-    assert verdict.analysis_transcode == "required"
+    # The operation, not the target. Every fixture here already reads
+    # `analysis_transcode == "required"` before this task, so asserting the
+    # target proves nothing; what this reason changes is which command is built.
+    facts = probe_media(natural_obu_clip)
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
     assert "presentation_timing_requires_decode" in verdict.analysis_reasons
+    for target, encoding in BOTH_TARGETS:
+        command = build_command(
+            verdict,
+            facts,
+            target,
+            natural_obu_clip,
+            tmp_path / f"{target}.mp4",
+            encoding=encoding,
+        )
+        assert command is not None
+        assert command.operation is Operation.REENCODE_AV1
 
 
 def test_an_mpeg2_elementary_stream_is_routed_to_a_decode(
     invented_timing_clips: dict[str, Path],
 ) -> None:
+    # Reason only, deliberately. This fixture already selects a re-encode on both
+    # targets through `unsupported_codec` and `unverified_frame_correspondence`,
+    # so an operation assertion here would pass whether or not this task landed.
     verdict = derive(
         probe_media(invented_timing_clips["mpegvideo"]), CHROME_149, DEFAULT_THRESHOLDS
     )
     assert "presentation_timing_requires_decode" in verdict.analysis_reasons
 ```
+
+That test needs a `tmp_path` parameter. **Which assertion is load-bearing differs per
+fixture, and asserting the wrong one is how a half-landed change passes.** Measured
+before this task:
+
+| fixture | operation today | operation required | what discriminates |
+| --- | --- | --- | --- |
+| `natural_obu_clip` | `remux_timebase` / `remux_container` | `reencode_av1` on both | the operation |
+| `reordered_raw_h264_clip` | `remux_timebase` / `remux_container` | `reencode_av1` on both | the operation |
+| `invented_timing_clips["mpegvideo"]` | `reencode_av1` already | unchanged | the reason only |
+| `invented_timing_clips["h263"]` | `reencode_av1` already | unchanged | the reason only |
+
+A reason added to the vocabulary but left out of one of the two `_REENCODE_*` sets
+is a plausible half-implementation, and no reason-set assertion catches it. The
+operation is what proves the change did something -- but only on the two fixtures
+where the operation actually moves. On the other two it would be vacuous, so those
+assert the reason and say why.
+
+**The target pair is a module constant, not an inline tuple.** Written inline, the
+loop variable infers as `str` where `build_command` takes the `Target` alias, so
+the test passes pytest and fails the type check -- which is the wrong way round to
+find it. Hoist it once:
+
+```python
+BOTH_TARGETS: tuple[tuple[Target, EncodingParameters], ...] = (
+    ("analysis", ANALYSIS_ENCODING),
+    ("playback", PLAYBACK_ENCODING),
+)
+```
+
+**Two further fixtures fire, and both already exist.** The predicate was evaluated
+over the whole corpus rather than over the fixtures this task adds:
+
+```python
+def test_a_containerized_source_carrying_decode_order_is_routed_to_a_decode(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # The corpus's only containerized instance, and the closest to the class this
+    # reason exists for: real container timing, but decode timestamps only, and a
+    # bitstream that holds pictures back. Its transcode target already reads
+    # required for an unrelated reason -- a header declaring twice the measured
+    # rate and frame count -- so the operation is what discriminates here.
+    path = clips["no_pts_avi"]
+    facts = probe_media(path)
+    assert facts.timing_source == "decode"
+    assert facts.coded_reordering_depth > 0
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    assert "presentation_timing_requires_decode" in verdict.analysis_reasons
+    for target, encoding in BOTH_TARGETS:
+        command = build_command(
+            verdict, facts, target, path, tmp_path / f"{target}.mp4", encoding=encoding
+        )
+        assert command is not None
+        assert command.operation is Operation.REENCODE_AV1
+
+
+def test_a_rate_stating_reordered_raw_stream_is_routed_to_a_decode(
+    raw_hevc_clip: Path, tmp_path: Path
+) -> None:
+    # The HEVC counterpart of the reordered H.264 fixture: absent timing, a
+    # reordering depth of 2, and a rate its bitstream states, so the refusal that
+    # follows does not reach it. Only the analysis target discriminates -- the
+    # playback one already selects a re-encode because the raw container cannot
+    # be copied into mp4.
+    facts = probe_media(raw_hevc_clip)
+    assert facts.timing_source == "absent"
+    assert facts.coded_reordering_depth > 0
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    assert "presentation_timing_requires_decode" in verdict.analysis_reasons
+    command = build_command(
+        verdict,
+        facts,
+        "analysis",
+        raw_hevc_clip,
+        tmp_path / "analysis.mp4",
+        encoding=ANALYSIS_ENCODING,
+    )
+    assert command is not None
+    assert command.operation is Operation.REENCODE_AV1
+```
+
+Neither costs a new fixture. `no_pts_avi` is in the `clips` mapping and `raw_hevc_clip`
+was added by the elementary-stream-rate task, where its only assertion is on the
+declared rate. Both move from a copy remux to a re-encode, so both discriminate.
+
+**What must not fire, and is the larger half of the corpus:** every source with
+presentation timestamps and a positive reordering depth -- the mp4 assets, the
+transport stream, the constant-rate clip. Real presentation timestamps already
+carry the order, so firing there would re-encode most of the corpus.
+`test_reordering_with_presentation_timestamps_is_left_alone` pins that on
+hand-built facts; the corpus sweep confirms it holds on real media.
 
 - [ ] **Step 2: Run them and confirm they fail**
 
@@ -1455,10 +1560,14 @@ def test_a_raw_stream_stating_a_rate_is_not_refused() -> None:
 
 `TranscodeError` is not currently imported in that module; add it.
 
-In `tests/probe/test_raw_stream.py`, add the committed asset end to end. That
-module currently imports only `Path`, the candidate check, the policy constants,
-`probe_media` and `derive`; this test additionally needs `pytest`,
-`TranscodeError`, `build_command`, `ANALYSIS_ENCODING` and the `asset` helper.
+In `tests/transcode/test_commands.py` -- **not** in `tests/probe/`. A probe test
+importing the transcode layer is the one inverted edge in the test tree: the
+reverse direction is routine and mirrors the source layering, and this would be
+the second module to invert it. The fixtures are reachable from anywhere, because
+the rootdir conftest registers the media fixtures as a plugin.
+
+That module already imports `derive` and the policy constants; this test
+additionally needs the `asset` helper.
 
 ```python
 def test_the_committed_rate_less_stream_is_refused(tmp_path: Path) -> None:

@@ -11,7 +11,9 @@ from mosaic_media.probe.ffprobe import (
     timing_source_for,
     timing_supplied_by_source,
 )
+from mosaic_media.probe.policy import CHROME_149, DEFAULT_THRESHOLDS
 from mosaic_media.probe.probe import probe_media
+from mosaic_media.probe.verdict import derive
 from tests.helpers.corpus import decode_md5s
 from tests.helpers.media_fixtures import (
     requires_av1_frame_split,
@@ -136,3 +138,15 @@ def test_a_reordered_raw_stream_carries_no_timing_and_reorders(
     assert facts.timing_source == "absent"
     assert facts.coded_reordering_depth == 2
     assert facts.declared_fps == pytest.approx(25.0)
+
+
+def test_an_mpeg2_elementary_stream_is_routed_to_a_decode(
+    invented_timing_clips: dict[str, Path],
+) -> None:
+    # Reason only, deliberately. This fixture already selects a re-encode on both
+    # targets through `unsupported_codec` and `unverified_frame_correspondence`,
+    # so an operation assertion here would pass whether or not this task landed.
+    verdict = derive(
+        probe_media(invented_timing_clips["mpegvideo"]), CHROME_149, DEFAULT_THRESHOLDS
+    )
+    assert "presentation_timing_requires_decode" in verdict.analysis_reasons

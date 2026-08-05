@@ -62,6 +62,7 @@ _REENCODE_STREAM_REASONS: frozenset[StreamReason] = frozenset(
         "interlaced",
         "large_seek_payload",
         "sparse_keyframes",
+        "presentation_timing_requires_decode",
     }
 )
 _REENCODE_ANALYSIS_REASONS: frozenset[AnalysisReason] = frozenset(
@@ -71,6 +72,7 @@ _REENCODE_ANALYSIS_REASONS: frozenset[AnalysisReason] = frozenset(
         "non_square_pixels",
         "interlaced",
         "unverified_frame_correspondence",
+        "presentation_timing_requires_decode",
     }
 )
 

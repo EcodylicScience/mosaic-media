@@ -87,6 +87,30 @@ def _declared_average_rate(path: Path) -> str:
     return completed.stdout.strip()
 
 
+def _decoded_times(path: Path) -> list[float]:
+    """Presentation times of the decoded frames, in the decoder's output order.
+
+    Deliberately unsorted, and read from frames rather than packets: a caller
+    asserts that decode order already is presentation order, so a helper that
+    sorted anywhere, or that read packet timestamps instead, would report a file
+    whose pictures are mistimed as correct.
+    """
+    argv = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "frame=pts_time",
+        "-of",
+        "default=nw=1:nk=1",
+        str(path),
+    ]
+    completed = subprocess.run(argv, capture_output=True, text=True, check=True)
+    return [float(line) for line in completed.stdout.split()]
+
+
 def _warnings_of(argv: tuple[str, ...]) -> str:
     """Run a built command at warning level and return what ffmpeg wrote.
 
@@ -815,3 +839,20 @@ def test_a_reencode_materializes_every_frame_a_cut_source_carries(
         difference = float(numpy.mean(numpy.abs(earlier - later)))
         message = f"frames {position} and {position + 1} repeat: {difference}"
         assert difference > 0.5, message
+
+
+@requires_svtav1
+def test_a_reordered_raw_stream_comes_back_in_presentation_order(
+    reordered_raw_h264_clip: Path, tmp_path: Path
+) -> None:
+    # The defect this reason exists for, measured end to end. A copy remux of
+    # this source writes timestamps from the packet index, which is decode order,
+    # so the fourth picture carries a lower timestamp than the second. The
+    # acceptance re-probe cannot see it, because the timestamps are uniform and
+    # complete either way -- only their assignment to pictures is wrong.
+    result = transcode(
+        reordered_raw_h264_clip, tmp_path / "out.mp4", "analysis", ANALYSIS_ENCODING
+    )
+    assert result.output_path is not None
+    times = _decoded_times(result.output_path)
+    assert times == sorted(times)

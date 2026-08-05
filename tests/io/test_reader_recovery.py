@@ -650,9 +650,9 @@ def test_a_source_declaring_more_frames_than_it_decodes_raises(
     assert facts.max_timestamp_gap_frame_periods == pytest.approx(1.0)
     assert facts.discard_flagged_packets == 0
     assert facts.leading_non_keyframe_frames == 0
-    assert (
-        derive(facts, CHROME_149, DEFAULT_THRESHOLDS).analysis_transcode == "required"
-    )
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    assert verdict.analysis_transcode == "required"
+    assert "presentation_timing_requires_decode" in verdict.analysis_reasons
     for label, reader in (
         ("frame periods later", VideoReader(path, facts=facts)),
         ("frame 1:", VideoReader(path)),
