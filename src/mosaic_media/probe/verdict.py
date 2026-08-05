@@ -1,4 +1,8 @@
-"""Two transcode targets, derived from measured facts. No I/O.
+"""Two transcode targets, derived from measured facts.
+
+This module performs no I/O: it reads the facts a probe already measured
+and returns a verdict. It imports the probe's own vocabulary -- the timing
+provenance alias and the predicate over it -- which reads nothing either.
 
 Reasons are a set, not a single value, because the reason selects the command.
 A constant-rate file with a lying header needs a `-c copy` remux with a corrected

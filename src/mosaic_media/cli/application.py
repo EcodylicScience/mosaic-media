@@ -7,8 +7,8 @@ as JSON; `compare` prints a duplication comparison as JSON and exits with the
 verdict as its exit code, so the command doubles as a shell test; `transcode`
 runs the minimum operation for a target and honors the opt-out semantics. Job
 infrastructure calls the Python API directly, never this CLI -- structured
-exceptions, no argv escaping, no output parsing. `mosaic` mounts this app with
-`app.add_typer(media_app, name="media")`.
+exceptions, no argv escaping, no output parsing. A host CLI mounts this app
+with `app.add_typer(media_app, name="media")`.
 """
 
 import dataclasses
@@ -42,7 +42,7 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
-# Alias for mounting into the mosaic CLI: app.add_typer(media_app, name="media").
+# Alias for mounting into a host CLI: app.add_typer(media_app, name="media").
 media_app = app
 
 

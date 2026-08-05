@@ -1,3 +1,13 @@
+"""Header, packet and version reads against ffprobe output.
+
+A stand-in installed over a real callable mirrors that callable's own parameter
+names, kinds and defaults, so a keyword call binds to it exactly as it binds to
+the original and a stand-in that has fallen behind fails about the behavior
+under test rather than about the argument shape. Parameters a stand-in does not
+read are deleted rather than renamed: an underscore prefix would satisfy the
+unused-parameter check but break the very binding the mirroring exists for.
+"""
+
 import json
 from pathlib import Path
 
@@ -240,7 +250,14 @@ def test_scan_packets_names_a_missing_payload_hash_column(
     # An ffprobe that accepts the flag but does not report the data_hash entry
     # emits five columns. Every row is then unusable, and the failure must name
     # the cause rather than claiming the file has no packets.
-    def five_column_rows(_command: list[str], **_keywords: object) -> str:
+    def five_column_rows(
+        command: list[str],
+        *,
+        timeout: float,
+        action: str,
+        error_type: type[RuntimeError],
+    ) -> str:
+        del command, timeout, action, error_type
         return "0.000000,0.000000,3837,48,K__\n0.040000,0.040000,120,3885,___\n"
 
     monkeypatch.setattr(
@@ -264,7 +281,14 @@ def test_prober_version_is_read_once_per_process() -> None:
 def test_prober_version_names_a_missing_libavformat_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def without_libavformat(_command: list[str], **_keywords: object) -> str:
+    def without_libavformat(
+        command: list[str],
+        *,
+        timeout: float,
+        action: str,
+        error_type: type[RuntimeError],
+    ) -> str:
+        del command, timeout, action, error_type
         return '{"program_version": {"version": "7.0"}, "library_versions": []}'
 
     # Cleared on both sides: warm, the body never runs and this passes against
@@ -282,7 +306,14 @@ def test_prober_version_names_a_missing_libavformat_entry(
 
 
 def test_prober_version_names_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    def not_json(_command: list[str], **_keywords: object) -> str:
+    def not_json(
+        command: list[str],
+        *,
+        timeout: float,
+        action: str,
+        error_type: type[RuntimeError],
+    ) -> str:
+        del command, timeout, action, error_type
         return "not json"
 
     prober_version.cache_clear()
@@ -297,7 +328,14 @@ def test_prober_version_names_invalid_json(monkeypatch: pytest.MonkeyPatch) -> N
 def test_prober_version_names_a_missing_program_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def without_program_version(_command: list[str], **_keywords: object) -> str:
+    def without_program_version(
+        command: list[str],
+        *,
+        timeout: float,
+        action: str,
+        error_type: type[RuntimeError],
+    ) -> str:
+        del command, timeout, action, error_type
         library_versions = [{"name": "libavformat", "ident": "Lavf60.16.100"}]
         return json.dumps({"library_versions": library_versions})
 
@@ -318,7 +356,14 @@ def test_prober_version_does_not_mint_a_null_program_version(
     # A JSON null decoded by Python is None, and str(None) is the truthy
     # string "None" -- a value that looks measured and is not. The leaf must
     # be read through a type check, not coerced with str(...).
-    def null_version(_command: list[str], **_keywords: object) -> str:
+    def null_version(
+        command: list[str],
+        *,
+        timeout: float,
+        action: str,
+        error_type: type[RuntimeError],
+    ) -> str:
+        del command, timeout, action, error_type
         library_versions = [{"name": "libavformat", "ident": "Lavf60.16.100"}]
         return json.dumps(
             {"program_version": {"version": None}, "library_versions": library_versions}
@@ -341,7 +386,14 @@ def test_prober_version_does_not_mint_a_null_libavformat_ident(
     # an empty library_versions list, which raises before ever reaching the
     # isinstance narrowing on raw_ident -- so only an explicit null here
     # exercises that check.
-    def null_ident(_command: list[str], **_keywords: object) -> str:
+    def null_ident(
+        command: list[str],
+        *,
+        timeout: float,
+        action: str,
+        error_type: type[RuntimeError],
+    ) -> str:
+        del command, timeout, action, error_type
         library_versions = [{"name": "libavformat", "ident": None}]
         return json.dumps(
             {
@@ -369,7 +421,14 @@ def test_prober_version_names_a_non_dict_payload(
     # missing-program-version test because both detect the same absence; this
     # test's job is to prove the non-dict branch is what produces it here,
     # not the dict branch.
-    def non_dict_payload(_command: list[str], **_keywords: object) -> str:
+    def non_dict_payload(
+        command: list[str],
+        *,
+        timeout: float,
+        action: str,
+        error_type: type[RuntimeError],
+    ) -> str:
+        del command, timeout, action, error_type
         return "[]"
 
     prober_version.cache_clear()

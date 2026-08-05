@@ -5,8 +5,8 @@ The console script installs with the package whether or not the `[cli]` extra
 extra. This facade keeps `import mosaic_media.cli` free of typer so `main` can
 exit with install guidance on a core-only environment instead of dying with a
 raw ModuleNotFoundError. `app` and `media_app` resolve lazily to the real
-typer application and still require the extra, which `mosaic` (the mounting
-consumer) always has.
+typer application and still require the extra, which is present wherever this
+app is mounted as a sub-application.
 """
 
 from typing import TYPE_CHECKING

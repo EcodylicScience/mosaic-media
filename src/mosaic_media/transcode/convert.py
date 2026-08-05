@@ -10,7 +10,7 @@ and the playback output must not be unplayable. A transcode that clears its
 target reason but introduces a new one therefore still fails. A playback output
 that plays but still carries a soft reason is not a failure; it is reported to
 the caller. That output probe also mints the derivative's authoritative
-MediaFacts, measured once here because consumers never re-measure.
+MediaFacts, measured once here because measurement is not re-derived.
 
 A red verdict on the transcoded output is a terminal failure, not a transient
 one. The converter raises and stops; a caller must not respond by scheduling
@@ -333,7 +333,8 @@ def run_transcode(
     unplayable. A playback output that still carries a soft reason is not a failure
     but is reported through `TranscodeResult.residual_recommended`. Raises
     `TranscodeError` when ffmpeg fails, when a file destination's suffix is not
-    .mp4, when the resolved destination equals the source, or when the output is
+    .mp4, when the resolved destination equals the source, when the source states
+    no frame rate in either its container or its bitstream, or when the output is
     not clean for the target.
 
     `on_progress`, when given, is called with a `TranscodeProgress` for each block

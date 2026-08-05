@@ -81,8 +81,8 @@ CHROME_149 = PlaybackProfile(
 # Being unable to encode a codec here does not bar it: the h264 and hevc samples
 # are committed under tests/assets/ and read with no added dependency, since both
 # decoders are native and LGPL. Injected like every other policy in this module,
-# so a consumer measuring a codec this set omits adds it without touching this
-# package.
+# so a codec this set omits is added by measuring it and supplying the wider
+# set, without touching this package.
 #
 # Equal to CHROME_149.codecs today, and independent of it. One says a decoder
 # emits a frame per packet, the other says a browser can play the stream; they

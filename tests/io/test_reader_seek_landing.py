@@ -9,6 +9,7 @@ forward would return a frame decoded from the wrong prefix, and that raises.
 
 from dataclasses import replace
 from pathlib import Path
+from typing import override
 
 import numpy
 import pytest
@@ -39,8 +40,31 @@ def test_a_landing_before_the_requested_keyframe_returns_the_right_frame(
     assert numpy.array_equal(frame, truth[6])
 
 
+# Stand-ins installed over a real callable mirror that callable's own parameter
+# names, kinds and defaults, and delete what they do not read rather than
+# renaming it. tests/probe/test_ffprobe.py's module docstring says why.
+
+
+class _ReaderLandingPastTheNamedKeyframe(VideoReader):
+    """A reader whose container lands one keyframe later than the index named.
+
+    Written as a subclass rather than an attribute swap so the type checker
+    holds the override to the base method: a parameter renamed on either side
+    is an error here rather than a call that stops binding silently.
+    """
+
+    landing_time: float = 0.0
+
+    @override
+    def _to_stream_offset(self, stream: VideoStream, keyframe_time: float) -> int:
+        del keyframe_time
+        time_base = stream.time_base
+        assert time_base is not None
+        return int(round(self.landing_time / float(time_base)))
+
+
 def test_a_landing_after_the_requested_keyframe_raises(
-    clips: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    clips: dict[str, Path],
 ) -> None:
     # An index claiming a keyframe earlier than the container will land on makes
     # the decoder start past the requested position, so the frames before it were
@@ -48,18 +72,10 @@ def test_a_landing_after_the_requested_keyframe_raises(
     path = clips["cfr_30fps_mp4"]
     facts = probe_media(path)
     real = index_for(path)
-
-    def seek_past_the_named_keyframe(
-        _self: VideoReader, stream: VideoStream, _time: float
-    ) -> int:
-        # Land the container one keyframe later than the index named, without
-        # touching the index -- which is the condition under test.
-        time_base = stream.time_base
-        assert time_base is not None
-        return int(round(real.frame_times[30] / float(time_base)))
-
-    monkeypatch.setattr(VideoReader, "_to_stream_offset", seek_past_the_named_keyframe)
-    with VideoReader(path, facts=facts, index=real) as reader:
+    with _ReaderLandingPastTheNamedKeyframe(path, facts=facts, index=real) as reader:
+        # Land one keyframe later than the index named, without touching the
+        # index -- which is the condition under test.
+        reader.landing_time = real.frame_times[30]
         with pytest.raises(MediaProbeError, match="or earlier but decoded"):
             reader.seek(5)
 

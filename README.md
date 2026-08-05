@@ -35,9 +35,9 @@ hardware encoding, which requires the relevant ffmpeg encoder and a device.
 
 ## Quick start
 
-Probe once. `MediaFacts` is the authoritative metadata from then on: pass it to
-everything downstream rather than re-measuring, because a file that is already
-clean is never rewritten and so cannot be assumed to have canonical bytes.
+Probe once. `MediaFacts` is the authoritative metadata from then on: pass it
+onward rather than re-measuring, because a file that is already clean is never
+rewritten and so cannot be assumed to have canonical bytes.
 
 ```python
 from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, derive, probe_media
@@ -74,7 +74,7 @@ uniform-grid position before the file counts as variable rate),
 `truncation_duration_ratio=0.95`, `start_time_frame_periods=0.5`, and
 `frame_exact_codecs=FRAME_EXACT_CODECS` -- the codecs whose decoders are
 measured to emit one frame per packet, the one limit that is a set rather than
-a number. A codec outside it gets an analysis re-encode, so a consumer that has
+a number. A codec outside it gets an analysis re-encode, so a caller that has
 measured one this package omits injects a wider set rather than patching it.
 
 Run the work the verdict calls for:
@@ -222,8 +222,8 @@ every case; derivatives are separate artifacts.
 
 | Target | Trigger | `stream_transcode` |
 | --- | --- | --- |
-| Analysis | Any analysis reason: variable frame rate, unreliable timing metadata, rotation, non-square pixels, interlacing, or a codec whose decoder is not measured to deliver one frame per packet. | not applicable |
-| Playback | A hard stream reason: the browser's rendering would disagree with the coordinate or time model -- unsupported container or codec, variable frame rate, rotation, non-square pixels, non-zero start time. | `required` |
+| Analysis | Any analysis reason: variable frame rate, unreliable timing metadata, timing a stream copy cannot recover, rotation, non-square pixels, interlacing, or a codec whose decoder is not measured to deliver one frame per packet. | not applicable |
+| Playback | A hard stream reason: the browser's rendering would disagree with the coordinate or time model -- unsupported container or codec, variable frame rate, rotation, non-square pixels, non-zero start time, or timing a stream copy cannot recover. | `required` |
 | Playback | A soft stream reason: it plays correctly, but not well or not everywhere. | `recommended` |
 
 Which containers and codecs count as supported is the caller's
@@ -398,14 +398,28 @@ that is not the one asked for. A read loop can raise, not only the probe call
 before it. The reader's cases are a seek landing that cannot be resolved
 against the index, a delivered frame the index does not place at the index it
 is being returned under, a gap between consecutive decoded frames of a
-constant-rate source, and a read that ends before delivering every frame its
-window declares. All four report the same condition -- a source whose packets
-do not all decode -- reached from different directions, and all four name the
-frame. A source the analysis verdict accepted raises none of them.
+constant-rate source, two consecutive decoded frames at one timestamp, and a
+read that ends before delivering every frame its window declares.
+
+The last four report the frame model and the decode disagreeing about how many
+pictures the file has, and each names the frame: three reach a shortfall from
+different directions -- packets that do not all decode -- while two frames at
+one timestamp is the excess, a picture the model does not count. A seek landing
+is different, and covers two raises: the container landed past the keyframe the
+index named, so the target's own references were skipped and counting forward
+would decode from the wrong prefix; or it landed outside the index's span
+altogether, and the decoded time matches no entry. Neither is a disagreement
+about the picture count, and the second names a time rather than a frame. A
+source the analysis verdict accepted raises none of them.
 
 `TranscodeError` comes from the converter: ffmpeg failing, the run exceeding its
 timeout, a cancel callback asking it to stop, a destination that is refused, or
 the output failing its acceptance probe.
+
+It also comes from `build_command`, before any command is built, for a source
+that states no frame rate in either its container or its bitstream. Such a file
+carries no timing at all, and neither a remux nor a re-encode can supply one
+without inventing it.
 
 
 ## Container image

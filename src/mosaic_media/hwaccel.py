@@ -1,9 +1,9 @@
 """ffmpeg and hardware-acceleration capability probing. Standard library only.
 
-Absorbed from mosaic's video_io so the frame reader (NVDEC), the writer (NVENC),
-and the transcode converter share one probe rather than three copies. It sits at
-the package top level, not inside transcode/, because the io layer must reach it
-without importing transcode.
+Absorbed from an existing video I/O layer so the frame reader (NVDEC), the
+writer (NVENC), and the transcode converter share one probe rather than three
+copies. It sits at the package top level, not inside transcode/, because the
+io layer must reach it without importing transcode.
 
 Each result is cached: a capability does not change while the process runs, and
 each check spawns an ffmpeg subprocess.
@@ -98,8 +98,8 @@ def _encoder_listed(name: str, encoders_output: str) -> bool:
 def encoder_available(name: str) -> bool:
     """True when ffmpeg lists `name` among its encoders. Cached per name.
 
-    `encoder_available("h264_nvenc")` is the NVENC probe mosaic's video_io ran;
-    the AV1 transcode asks for `av1_nvenc`, and the CPU fallback for `libsvtav1`.
+    `encoder_available("h264_nvenc")` is the NVENC probe that layer ran; the AV1
+    transcode asks for `av1_nvenc`, and the CPU fallback for `libsvtav1`.
     """
     cached = _encoder_ok.get(name)
     if cached is not None:

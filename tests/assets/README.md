@@ -107,8 +107,8 @@ ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=2" \
 # timing option to reach for. Suppressing the block while leaving the stream
 # valid is an encoder parameter, so this clip is encoded rather than remuxed.
 ffmpeg -v error -y -f lavfi -i "testsrc2=size=128x96:rate=25" -frames:v 25 \
-    -c:v libx265 -x265-params "log-level=none:vui-timing-info=0" \
-    -f hevc tests/assets/raw_no_declared_rate.hevc
+    -c:v libx265 -x265-params "log-level=none:vui-timing-info=0" $Q \
+    -f hevc raw_no_declared_rate.hevc
 
 # open_gop.mp4 -- 50 frames, 25 fps, GOP 12, open GOP with B-frames. Every
 # keyframe after the first is followed in decode order by pictures that precede

@@ -87,8 +87,9 @@ class VideoReader:
     cannot see: it completes. Where an index is available each delivered frame
     is checked against the entry for the index it is returned under; where one
     is not, consecutive decoded frames of a constant-rate source are checked
-    for the gap a missing frame leaves. Neither builds an index, so injecting
-    facts and reading forward still runs no packet scan.
+    both for the gap a missing frame leaves and for the collapse a duplicated
+    one makes. Neither builds an index, so injecting facts and reading forward
+    still runs no packet scan.
 
     Every array returned by this reader -- from `read`, `read_batch`,
     `read_frames`, or iteration -- is writable, C-contiguous, and never aliases
@@ -133,10 +134,9 @@ class VideoReader:
             raise MediaProbeError(message)
         self._grayscale: bool = bool(grayscale)
         # hwaccel is retained for signature compatibility and is a no-op: decode
-        # is always software. No consumer requests hardware decode today, and the
-        # GPU download path's bit-exactness against the framemd5 goldens is
-        # unverified. The implementation seam if that changes is
-        # av.codec.hwaccel.HWAccel("cuda").
+        # is always software, because the GPU download path's bit-exactness
+        # against the framemd5 goldens is unverified. The implementation seam if
+        # that changes is av.codec.hwaccel.HWAccel("cuda").
         self._want_hwaccel: bool = bool(hwaccel)
         self._facts: MediaFacts | None = facts
         self._index: SeekIndex | None = index
@@ -637,7 +637,26 @@ class VideoReader:
 
     def _check_decode_gap(self, geometry: _Geometry, frame: VideoFrame) -> None:
         """Raise when consecutive decoded frames sit further apart than one
-        frame period, which is a frame the decoder did not produce.
+        frame period, which is a frame the decoder did not produce, or at the
+        same timestamp, which is a picture the frame model does not count.
+
+        Both ends of one measured spacing. A widened step means the decoder
+        produced fewer pictures than the model counts; a collapsed one means it
+        produced more, and every later index then names the picture after the
+        one the model assigns it.
+
+        The collapse test is exact equality, never a non-positive spacing. A
+        backwards step is a different defect -- decode order disagreeing with
+        the model's sorted-timestamp order -- which the verdict routes to a
+        re-encode and which the index check already catches wherever an index
+        exists; widening this rule to cover it would put a second, weaker
+        detector on a defect that already has an answer.
+
+        It sits ahead of the spacing guards because a collapse is detectable
+        whatever the file's own spacing is. The guards below decline on a file
+        whose measured spacing cannot separate a missing frame from a legitimate
+        step, and that reasoning has no bearing on two pictures sharing one
+        timestamp.
 
         The half of the delivery contract `_verify_delivery` cannot reach.
         These two never both run: this one applies only when there is no index,
@@ -702,19 +721,28 @@ class VideoReader:
             return
         if geometry.fps <= 0:
             return
-        if facts.max_timestamp_gap_frame_periods <= 0.0:
-            return
-        threshold = facts.max_timestamp_gap_frame_periods + 0.5
-        if threshold >= 2.0:
-            return
-        # Read after those conditions, never before. A frame carries no time when
+        # Read after that condition, never before. A frame carries no time when
         # its packet carried none, and `av` types that as a float it does not
         # always hold; the sources it happens on are exactly the ones a positive
-        # frame rate excludes, so the condition above is what makes this safe.
+        # frame rate excludes.
         observed = float(frame.time)
         previous = self._previous_decoded_time
         self._previous_decoded_time = observed
         if previous is None:
+            return
+        if observed == previous:
+            message = (
+                f"{self._path} frame {self._target}: the decoder delivered two "
+                f"pictures at {observed}, where the frame model counts one per "
+                "distinct timestamp; every later index names the picture after "
+                "the one it should, and it must be transcoded before it can be "
+                "read per frame"
+            )
+            raise MediaProbeError(message)
+        if facts.max_timestamp_gap_frame_periods <= 0.0:
+            return
+        threshold = facts.max_timestamp_gap_frame_periods + 0.5
+        if threshold >= 2.0:
             return
         gap = (observed - previous) * geometry.fps
         if gap <= threshold:

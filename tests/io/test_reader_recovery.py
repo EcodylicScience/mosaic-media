@@ -498,6 +498,12 @@ def test_a_coarse_timescale_source_reads_clean(
     # analysis-ready by this package's own verdict, so the reader must not fail
     # on it. A fixed threshold of 1.5 raised on all five; the corpus is all
     # 1/15360 mp4 and could not see it.
+    #
+    # This also covers the collapse condition, which sits ahead of the spacing
+    # guards. A coarse tick is what most easily puts two pictures on one
+    # timestamp, so these files are where a collapse check placed wrongly would
+    # fire -- and firing on a file this package calls analysis-ready would be a
+    # worse defect than the one the check catches.
     path = quantized_clips[name]
     facts = probe_media(path)
     assert facts.constant_frame_rate
@@ -879,3 +885,115 @@ def test_injected_facts_sparse_read_runs_one_packet_scan(
             targets = [index for index, _frame in reader.read_frames([5, 20, 40])]
         assert targets == [5, 20, 40]
         assert scans() == 1
+
+
+class _ReaderEmittingOneRankTwice(VideoReader):
+    """A reader whose decoder emits one presentation rank twice.
+
+    The mirror of `_ReaderSkippingPresentationRanks`: there the decode falls
+    behind the frame model, here it runs ahead. No file of this shape can be
+    written -- the mp4 muxer refuses two packets sharing a decode timestamp
+    outright -- so the decoder stands in for one.
+
+    Paired with `_ReaderEmittingOneDecodedFrameTwice`, which selects the same
+    defect by decode order instead. This one resolves its picture from that
+    picture's own presentation time, which is exact on a uniform timescale and
+    the clearer statement of intent; the sibling is what a coarse timescale
+    needs, because rounding every time to the tick distorts the arithmetic.
+    """
+
+    duplicated_rank: int = 10
+    _already_duplicated: bool = False
+    _held: VideoFrame | None = None
+
+    @override
+    def _decode_next(self) -> VideoFrame | None:
+        if self._held is not None:
+            frame = self._held
+            self._held = None
+            return frame
+        frame = super()._decode_next()
+        if frame is None:
+            return None
+        if (
+            not self._already_duplicated
+            and self._rank_of(frame) == self.duplicated_rank
+        ):
+            self._already_duplicated = True
+            self._held = frame
+        return frame
+
+    def _rank_of(self, frame: VideoFrame) -> int:
+        return round(float(frame.time) * self.fps)
+
+
+def test_a_decoder_emitting_one_rank_twice_raises(
+    clips: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Measured before this check: 60 delivered of 60 declared with no error, and
+    # 49 of the labels carrying the wrong picture. The frame model counts
+    # distinct presentation timestamps and the reader advances one index per
+    # decoded picture, so two pictures at one timestamp means every later index
+    # names the picture one position ahead of the one the model assigns it.
+    path = clips["cfr_30fps_mp4"]
+    facts = probe_media(path)
+    with count_packet_scans(reader_module, monkeypatch) as scans:
+        with _ReaderEmittingOneRankTwice(path, facts=facts) as reader:
+            with pytest.raises(MediaProbeError, match="frame 11:"):
+                for _index, _frame in reader:
+                    pass
+        assert scans() == 0
+
+
+class _ReaderEmittingOneDecodedFrameTwice(VideoReader):
+    """A reader whose decoder emits one picture twice, chosen by decode order.
+
+    The sibling of `_ReaderEmittingOneRankTwice`, which selects its picture by
+    presentation rank. That arithmetic multiplies a frame's own time by the
+    frame rate, and a coarse timescale rounds every time to its tick, so the
+    computed rank drifts from the true one on exactly the sources this stands
+    in over. Counting decoded pictures needs neither a rate nor a timestamp,
+    and so selects the same picture whatever the timescale.
+    """
+
+    duplicated_position: int = 10
+    _decoded: int = 0
+    _held: VideoFrame | None = None
+
+    @override
+    def _decode_next(self) -> VideoFrame | None:
+        if self._held is not None:
+            frame = self._held
+            self._held = None
+            return frame
+        frame = super()._decode_next()
+        if frame is None:
+            return None
+        self._decoded += 1
+        if self._decoded == self.duplicated_position:
+            self._held = frame
+        return frame
+
+
+def test_the_collapse_check_runs_before_the_spacing_guards(
+    quantized_clips: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Placement, pinned directly rather than through a consequence. A coarse
+    # timescale records a spacing wide enough that the guard declining above two
+    # frame periods returns, so a collapse test placed after those guards never
+    # runs on these files at all -- and the clean-read test above cannot see
+    # that, because it asserts they read clean under either placement. This is
+    # the class most able to put two pictures on one tick, so it is the class
+    # the check must reach.
+    path = quantized_clips["30_in_36"]
+    facts = probe_media(path)
+    # The precondition that makes this discriminating: the spacing guards do
+    # return on this file. Were that to stop holding, the test would still pass
+    # while no longer pinning the ordering.
+    assert facts.max_timestamp_gap_frame_periods + 0.5 >= 2.0
+    with count_packet_scans(reader_module, monkeypatch) as scans:
+        with _ReaderEmittingOneDecodedFrameTwice(path, facts=facts) as reader:
+            with pytest.raises(MediaProbeError, match="two pictures at"):
+                for _index, _frame in reader:
+                    pass
+        assert scans() == 0

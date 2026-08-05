@@ -9,10 +9,10 @@ silently incremented frame count.
 
 AV1 rather than H.264 because the software H.264 encoders PyAV's bundled build
 can reach are libx264 and libx264rgb, both GPL-2.0-or-later. PyAV links FFmpeg
-into the calling process, so naming one here links GPL code into every consumer
-of this package. A non-GPL software H.264 encoder exists -- libopenh264 -- but
-that build does not carry it. AV1 is also what the transcode path targets, so
-the writer and the transcode produce the same codec.
+into the calling process, so naming one here links GPL code into every process
+that imports this package. A non-GPL software H.264 encoder exists --
+libopenh264 -- but that build does not carry it. AV1 is also what the transcode
+path targets, so the writer and the transcode produce the same codec.
 """
 
 import warnings

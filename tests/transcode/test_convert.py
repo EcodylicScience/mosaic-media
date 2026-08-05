@@ -9,7 +9,12 @@ import pytest
 from mosaic_media.io.reader import VideoReader
 from mosaic_media.probe.errors import MediaProbeError
 from mosaic_media.probe.facts import MediaFacts
-from mosaic_media.probe.policy import CHROME_149, DEFAULT_THRESHOLDS
+from mosaic_media.probe.policy import (
+    CHROME_149,
+    DEFAULT_THRESHOLDS,
+    PlaybackProfile,
+    Thresholds,
+)
 from mosaic_media.probe.probe import probe_media
 from mosaic_media.probe.verdict import Verdict, derive
 from mosaic_media.transcode import (
@@ -554,8 +559,9 @@ def test_a_still_red_playback_output_is_a_terminal_failure(
     # Force the output re-probe to report an unplayable verdict; the gate must
     # raise and leave no output behind (a retry is never the answer).
     def still_required(
-        _facts: MediaFacts, _profile: object, _thresholds: object
+        facts: MediaFacts, profile: PlaybackProfile, thresholds: Thresholds
     ) -> Verdict:
+        del facts, profile, thresholds
         return Verdict(
             playable=False,
             stream_transcode="required",
@@ -588,8 +594,9 @@ def test_a_still_red_analysis_output_is_a_terminal_failure(
     lying_header_mkv: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def still_required(
-        _facts: MediaFacts, _profile: object, _thresholds: object
+        facts: MediaFacts, profile: PlaybackProfile, thresholds: Thresholds
     ) -> Verdict:
+        del facts, profile, thresholds
         return Verdict(
             playable=True,
             stream_transcode=None,
@@ -625,9 +632,17 @@ def test_an_unprobeable_output_is_a_terminal_failure(
     # raw, and the temporary output must still be cleaned up.
     source = clips["cfr_mp4"]
 
-    def unprobeable_output(path: Path, _thresholds: object) -> MediaFacts:
+    # Stand-ins installed over a real callable mirror that callable's own parameter
+    # names, kinds and defaults, and delete what they do not read rather than
+    # renaming it. tests/probe/test_ffprobe.py's module docstring says why.
+    def unprobeable_output(
+        path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS
+    ) -> MediaFacts:
+        # Forwarded rather than dropped: the caller passes its own thresholds,
+        # so probing without them would measure something the real call would
+        # not have produced.
         if path == source:
-            return probe_media(path)
+            return probe_media(path, thresholds)
         message = f"simulated unreadable output at {path}"
         raise MediaProbeError(message)
 
@@ -654,8 +669,9 @@ def test_a_residual_recommended_playback_output_is_surfaced_not_failed(
     # Output that plays but still trips a soft reason is not a failure; the result
     # records it so a caller can report the transcode was optional.
     def still_recommended(
-        _facts: MediaFacts, _profile: object, _thresholds: object
+        facts: MediaFacts, profile: PlaybackProfile, thresholds: Thresholds
     ) -> Verdict:
+        del facts, profile, thresholds
         return Verdict(
             playable=True,
             stream_transcode="recommended",

@@ -33,6 +33,7 @@ from .. import hwaccel
 from ..probe.facts import MediaFacts
 from ..probe.policy import AnalysisReason, StreamReason
 from ..probe.verdict import Verdict
+from .errors import TranscodeError
 
 Target = Literal["analysis", "playback"]
 
@@ -93,19 +94,19 @@ _REENCODE_ANALYSIS_REASONS: frozenset[AnalysisReason] = frozenset(
 # Plainly named because that test imports it, and not exported from the package.
 # It looks like FRAME_EXACT_CODECS -- both are frozensets of codec names, both
 # apparently about which codecs are acceptable -- and it is the opposite kind of
-# fact. That one is injected policy a consumer may widen after measuring a codec
-# this package has not; this one is a property of libavformat, changing when
-# ffmpeg changes rather than when a consumer's preferences do, and no consumer
-# can widen it because the muxer decides. Their safety properties are opposite
-# too: widening the trusted set degrades gracefully, while widening this one
+# fact. That one is injected policy, widened by supplying a codec this package
+# has not measured; this one is a property of libavformat, changing when ffmpeg
+# changes rather than when a preference does, and injection cannot widen it
+# because the muxer decides. Their safety properties are opposite too:
+# widening the trusted set degrades gracefully, while widening this one
 # asserts mp4 carries something it does not, which is the failing transcode
 # named above.
 #
-# There is a real consumer question this set appears to answer and does not: the
+# There is a real question this set appears to answer and does not: the
 # escalation carries no reason, so a caller cannot distinguish a re-encode the
 # verdict demanded from one the muxer forced. If that distinction is ever needed,
-# the answer is a reason on the command, not an exported constant a consumer
-# re-derives the selector from.
+# the answer is a reason on the command, not an exported constant the
+# selector is re-derived from.
 MP4_STREAM_COPY_CODECS: frozenset[str] = frozenset(
     {
         "h264",
@@ -143,7 +144,7 @@ class EncodingParameters:
 # The analysis derivative is measured, not watched: encoder-default GOP, no
 # audio, and quality that errs toward fidelity. For a file the analysis
 # verdict re-encodes, the derivative replaces the original as tracker input,
-# so quantization loss propagates into that file's downstream measurements
+# so quantization loss propagates into every later measurement of that file
 # (clean files are never re-encoded and keep their originals); crf 14 sits
 # inside the conventionally near-lossless band,
 # below the "visually transparent" range (crf ~18-24), at roughly twice the
@@ -367,11 +368,26 @@ def build_command(
     operation = _select_operation(verdict, facts, target)
     if operation is None:
         return None
+    if facts.timing_source == "absent" and facts.declared_fps <= 0.0:
+        # No timestamps and no rate the file states: this source has no timing at
+        # all, and neither a remux nor a re-encode can supply one without
+        # inventing it. The muxer's own fallback did exactly that, at an
+        # approximation nobody chose, and refusing is the honest outcome. The
+        # refusal precedes every reason, including the one that would otherwise
+        # select a re-encode.
+        message = (
+            f"{source} states no frame rate in its container or its bitstream, "
+            "so no timing can be written for it without inventing one"
+        )
+        raise TranscodeError(message)
     # Only a source carrying no timestamps at all may have them written from a
     # declared rate. On a measured file that field can be the header lie the
     # remux exists to correct, and on a source whose timing was invented it is
     # the demultiplexer's own default -- writing either in would make it the
-    # file's truth.
+    # file's truth. What is left qualifying is narrow: absent timing, no
+    # reordering, and a rate the file itself states. A reordered source is
+    # routed to a re-encode because a copy cannot recover its order, and one
+    # stating no rate is refused above.
     timestamp_fps = facts.declared_fps if facts.timing_source == "absent" else 0.0
     if operation is Operation.REENCODE_AV1:
         argv = _reencode_argv(

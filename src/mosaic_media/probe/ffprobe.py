@@ -63,6 +63,9 @@ _LIBAVFORMAT = "libavformat"
 # list by measuring rather than by reasoning about what a container is: m4v and
 # ivf are bare streams that nonetheless carry real per-picture timing, and avi
 # carries genuine timing through the decode-timestamp path.
+# Plainly named because a test imports it, and not exported from the package:
+# it is a measurement of which demultiplexers invent timing, not a policy a
+# caller supplies or a value anything outside this package reads.
 INVENTED_TIMING_CONTAINERS = frozenset(
     {"obu", "mpegvideo", "yuv4mpegpipe", "h263", "jpeg_pipe"}
 )
@@ -257,8 +260,8 @@ def select_video_stream(streams: list[object]) -> SelectedVideoStream | None:
     packets scanned from the right stream.
 
     `video_stream_count` counts only the real streams. Two of those leave "which
-    one is the video" without a defined answer, and every downstream consumer
-    would have to guess; the caller rejects such a file rather than choosing.
+    one is the video" without a defined answer, so the answer could only be
+    guessed; the caller rejects such a file rather than choosing.
 
     Matroska does not mark a cover image with the `attached_pic` disposition, so
     one appears here as a second real video stream and the file is rejected. That
@@ -469,7 +472,8 @@ def scan_packets(
     A stream where every packet lacks both timestamps -- a raw elementary
     stream such as a bare `.h264` file -- returns its packets with source
     `"none"`: the sizes, keyframe flags, and byte offsets are real, but `time`
-    is a 0.0 placeholder that no timing or seeking consumer may read.
+    is a 0.0 placeholder rather than a measurement, and must not be read as one
+    for timing or for seeking.
     `probe_media` skips the grid fit for such a stream and records that the
     file supplied no timing; the io packet scan refuses the file instead.
 
@@ -496,8 +500,8 @@ def scan_packets(
     for line in raw.splitlines():
         # ffprobe emits the requested entries in its own natural order:
         # pts_time, dts_time, size, pos, flags, data_hash. Byte offset (pos) is
-        # N/A on containers that do not expose it; it is carried for io
-        # consumers and is not used by the timestamp-based seek path, so -1 is a
+        # N/A on containers that do not expose it; it is carried for the io
+        # layer and is not used by the timestamp-based seek path, so -1 is a
         # safe unknown. MPEG-TS appends a seventh empty side-data column, which
         # does not move any index below it.
         columns = line.split(",")

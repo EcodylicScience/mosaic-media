@@ -1876,6 +1876,26 @@ Never widen a stand-in with `**_keywords` to make a call bind. A wildcard accept
 calls the original would reject, so a dropped or misspelled argument is absorbed
 rather than surfaced, and the stand-in drifts further the longer it survives.
 
+**An expanded parameter the stand-in body does not read is a type error, and both
+obvious escapes are closed.** With the strict mode this repository runs,
+`reportUnusedParameter` fires on every expanded parameter the body ignores --
+which is why these stand-ins were written with a wildcard in the first place. A
+suppression is forbidden. Underscore-prefixing defeats the task's whole purpose,
+because a keyword call cannot bind to a renamed parameter, which is the exact
+failure this work exists to eliminate.
+
+`del` counts as an access, and is the required form:
+
+```python
+def stand_in(path: Path, timeout: float = 30.0, action: str = "probe") -> str:
+    del timeout, action
+    return str(path)
+```
+
+Real names, real defaults, keyword calls bind, no suppression. Verified against
+this project's configuration: `0 errors, 0 warnings, 0 notes`. Use it for any
+expanded parameter the stand-in does not read.
+
 - [ ] **Step 3: Prefer a subclass override where the shape allows**
 
 Where a stand-in replaces a method on a class the test can subclass, write it as a

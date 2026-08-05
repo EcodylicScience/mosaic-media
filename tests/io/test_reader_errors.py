@@ -69,18 +69,27 @@ def test_del_after_failed_init_does_not_raise(
     # AttributeError noise from close() touching an unset attribute. Force a
     # construction failure through a seam __init__ still calls (path
     # resolution) and capture anything the garbage collector reports.
-    def _boom(_self: object) -> Path:
+    # Stand-ins installed over a real callable mirror that callable's own parameter
+    # names, kinds and defaults, and delete what they do not read rather than
+    # renaming it. tests/probe/test_ffprobe.py's module docstring says why.
+    def _boom(self: Path) -> Path:
+        del self
         raise RuntimeError("forced init failure")
 
     monkeypatch.setattr(Path, "expanduser", _boom)
-    unraisable: list[object] = []
-    monkeypatch.setattr(
-        sys, "unraisablehook", lambda hook_args: unraisable.append(hook_args)
-    )
+    reported: list[object] = []
+
+    # Positional-only, and named as the original names it: `sys.unraisablehook`
+    # takes `(unraisable, /)`, so a stand-in taking a keyword parameter would
+    # accept a call the original rejects.
+    def _record(unraisable: object, /) -> None:
+        reported.append(unraisable)
+
+    monkeypatch.setattr(sys, "unraisablehook", _record)
     with pytest.raises(RuntimeError):
         _ = VideoReader("nonexistent.mp4")
     _ = gc.collect()
     assert not any(
         isinstance(getattr(entry, "exc_value", None), AttributeError)
-        for entry in unraisable
+        for entry in reported
     )

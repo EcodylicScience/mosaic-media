@@ -2,11 +2,11 @@
 
 Segment 0 owns global frames [0, N0), segment 1 owns [N0, N0 + N1), and so on.
 Each file is probed once at construction -- or not at all when the caller
-injects `facts`, a sequence parallel to the paths: consumers hold MediaFacts
-from ingestion and measurement is never re-derived, so an injected open pays
-no ffprobe subprocess. `indices` likewise injects per-segment seek indices;
-segments without one build it from an in-process packet scan on first use, run
-in that segment's own timestamp space -- with the edit list ignored when the
+injects `facts`, a sequence parallel to the paths: the MediaFacts minted at
+ingestion travel forward and measurement is never re-derived, so an injected
+open pays no ffprobe subprocess. `indices` likewise injects per-segment seek
+indices; segments without one build it from an in-process packet scan on first
+use, run in that segment's own timestamp space -- with the edit list ignored when the
 segment's facts report discard-flagged packets, and in the container-default
 space otherwise -- because the per-segment reader decodes in the same space and
 rejects an index built in the other one. An

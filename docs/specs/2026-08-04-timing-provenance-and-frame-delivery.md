@@ -205,9 +205,11 @@ transcode is required rather than recommended. A hard stream reason means the
 browser's rendering disagrees with this package's coordinate or time model, and
 timing assigned to the wrong pictures is exactly a broken frame-index-to-time
 mapping. Every source that fires the reason in today's corpus also fires
-`unsupported_container`, so the classification changes nothing measurable now and
-no test would catch it being wrong -- which is why it is settled here rather than
-left to the implementation.
+`unsupported_container`, so the classification changes nothing measurable in the
+corpus -- which is why it is settled here rather than left to the
+implementation. It is pinned all the same: hand-built facts in a supported
+container carry the reason alone, and asserting `playable is False` on them
+fails if the membership is dropped.
 
 **Why a re-encode and not a timestamp-writing remux.** The timebase remux copies
 packets and writes timestamps from `declared_fps`. For a synthesized-timing
@@ -353,7 +355,7 @@ silently dead.
 change the hash input: `video_uuid_input` keeps taking a boolean, renamed to
 `timing_supplied_by_source`, and every file whose value is unchanged keeps its
 identity byte for byte. The re-mint is exactly the formats moving to
-`synthesized`: `obu` and `mpegvideo`.
+`synthesized`: `obu`, `mpegvideo`, `yuv4mpegpipe`, `h263` and `jpeg_pipe`.
 
 The boolean is produced by one named function taking a `timing_source` and
 returning whether the file supplied the timing. Both the probe and the identity
@@ -364,10 +366,11 @@ probe the moment an invented-timing format reaches an identity fixture.
 Both hash inputs are explicit field lists, so `timing_source` and the coded
 reordering depth enter neither and add no re-mint of their own.
 
-No identity scheme version bump. A bump re-mints every value in every corpus, and
-the change reaches two formats. A stored `video_uuid` for a file of either format
-no longer matches what the probe now mints, and re-probing is what reconciles it;
-that is the only detectable effect.
+No identity scheme version bump. A bump re-mints every value in every corpus,
+and the change reaches five formats, none of which any measured corpus holds. A
+stored `video_uuid` for a file of one of them no longer matches what the probe
+now mints, and re-probing is what reconciles it; that is the only detectable
+effect.
 
 ## Tests
 
@@ -478,6 +481,36 @@ after.
 the analysis and the stream vocabularies and to the hard stream set. Both
 vocabularies are exported `Literal` aliases, so a reader of a reason set widens
 by re-typing against them rather than by enumerating.
+
+## Consequences worth stating
+
+Two follow from the rules above rather than being specified by them, and neither
+is visible in a firing condition.
+
+**A source carrying real container timing but only decode timestamps, over a
+bitstream that reorders, now costs a full re-encode where it cost a copy.** The
+audio video interleave class is where this lands: measured on a file of that
+shape, the analysis target moves from the timebase remux and the playback target
+from the container remux, both to a re-encode. The reasoning holds -- those
+timestamps genuinely are decode order, and a copy cannot reorder them -- but the
+cost is real and is the most likely surprise this work produces.
+
+**The timestamp-writing remux narrows to almost nothing.** Before this work it
+served every source with no usable timing. After the new reason it is unreachable
+for a synthesized or reordered source, both of which now select a re-encode; after
+the refusal it is unreachable for a source stating no rate. What remains is a
+source with no timestamps, no reordering, and a rate its bitstream states -- in
+the measured corpus, the two raw H.264 streams. Its tests stay green throughout,
+so nothing signals how narrow the path has become, and the deprecated-fallback
+argument rests entirely on it.
+
+**Every synthesized source carries two reasons for one fact.** Unreliable timing
+metadata fires for absent or synthesized timing; the new reason fires for
+synthesized timing or reordering without presentation timestamps. They are not
+redundant in general -- absent with no reordering fires only the first, decode
+with reordering only the second -- but for a synthesized source they always
+co-fire. No consequence for command selection, since both select a re-encode; it
+reads as two problems wherever a reason set is displayed rather than acted on.
 
 ## Out of scope
 

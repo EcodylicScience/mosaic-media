@@ -83,12 +83,18 @@ _NOT_AN_ASSET = "README.md"
 def _committed_assets() -> tuple[Path, ...]:
     """Every committed asset, selected by exclusion rather than by suffix.
 
-    Deliberately not filtered through ingestion policy: which suffixes a
-    consumer would offer this package and which committed files this suite
-    probes are different questions. Filtering by the former silently drops an
-    asset whose suffix no consumer ingests -- and a raw elementary stream is
-    exactly what demuxer-output drift is most likely to move, so it belongs in
-    the corpus whether or not it is a candidate for ingestion.
+    Deliberately not filtered through the candidate-extension set. Which
+    suffixes this package offers to ingest and which committed files this suite
+    probes are different questions, and the two agree today only by coincidence:
+    tying the corpus to the first means an asset can leave it silently the next
+    time they diverge. A raw elementary stream is exactly what demuxer-output
+    drift is most likely to move, so it belongs here whether or not anything
+    would ingest a file of its name.
+
+    The exclusion is a denylist of one, which is its own fragility: any future
+    non-media file in that directory joins the corpus and fails at its first
+    probe. That failure is loud and lands where someone is reading output, which
+    is why it is left as a note rather than given machinery.
     """
     return tuple(
         sorted(

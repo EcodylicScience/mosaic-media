@@ -4,6 +4,7 @@ shutil and subprocess are stubbed so these run on a machine without ffmpeg and
 pin the caching and output-parsing behavior directly.
 """
 
+import os
 import shutil
 import subprocess
 
@@ -24,12 +25,22 @@ def reset_caches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(hwaccel, "_encoder_ok", {})
 
 
+# Stand-ins installed over a real callable mirror that callable's own parameter
+# names, kinds and defaults, and delete what they do not read rather than
+# renaming it. tests/probe/test_ffprobe.py's module docstring says why.
+
+
 class FakeRun:
     """A subprocess.run stand-in returning a fixed exit code and stdout.
 
     The exit code drives the nvdec device probe (zero means the CUDA device
     initialized); the stdout drives the encoder-list parsing. Recorded commands
     let a test pin the exact argument vector.
+
+    `args` mirrors the typed declaration of `subprocess.run`, which is what a
+    call site is checked against. Its runtime signature collects positionally
+    as `*popenargs` and so reports no such parameter to `inspect.signature`;
+    mirroring that instead would name a parameter no caller can use.
     """
 
     def __init__(self, stdout: str, returncode: int = 0) -> None:
@@ -39,15 +50,16 @@ class FakeRun:
 
     def __call__(
         self,
-        command: list[str],
+        args: list[str],
         *,
         capture_output: bool = False,
         text: bool = False,
         timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        self.commands.append(command)
+        del capture_output, text, timeout
+        self.commands.append(args)
         return subprocess.CompletedProcess(
-            command, self.returncode, stdout=self.stdout, stderr=""
+            args, self.returncode, stdout=self.stdout, stderr=""
         )
 
 
@@ -56,22 +68,27 @@ class RaisingRun:
 
     def __call__(
         self,
-        command: list[str],
+        args: list[str],
         *,
         capture_output: bool = False,
         text: bool = False,
         timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        raise subprocess.TimeoutExpired(
-            command, timeout if timeout is not None else 5.0
-        )
+        del capture_output, text
+        raise subprocess.TimeoutExpired(args, timeout if timeout is not None else 5.0)
 
 
-def present(_name: str) -> str | None:
+def present(
+    cmd: str, mode: int = os.F_OK | os.X_OK, path: str | None = None
+) -> str | None:
+    del cmd, mode, path
     return "/usr/bin/ffmpeg"
 
 
-def absent(_name: str) -> str | None:
+def absent(
+    cmd: str, mode: int = os.F_OK | os.X_OK, path: str | None = None
+) -> str | None:
+    del cmd, mode, path
     return None
 
 
@@ -92,7 +109,10 @@ def test_ffmpeg_available_is_false_when_absent(
 def test_ffmpeg_availability_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = 0
 
-    def counting_which(_name: str) -> str | None:
+    def counting_which(
+        cmd: str, mode: int = os.F_OK | os.X_OK, path: str | None = None
+    ) -> str | None:
+        del cmd, mode, path
         nonlocal calls
         calls += 1
         return "/usr/bin/ffmpeg"

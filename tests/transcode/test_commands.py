@@ -20,8 +20,9 @@ from mosaic_media.transcode.commands import (
     TranscodeCommand,
     build_command,
 )
+from mosaic_media.transcode.errors import TranscodeError
 
-from tests.helpers.media_fixtures import requires_svtav1
+from tests.helpers.media_fixtures import asset, requires_svtav1
 
 # The 34-field clean baseline lives once, in the copied probe suite; reuse it
 # instead of restating it (repo precedent: tests/probe/test_sequence.py imports
@@ -30,6 +31,14 @@ from tests.probe.test_verdict import CLEAN
 
 SOURCE = Path("/tmp/in.mkv")
 DESTINATION = Path("/tmp/out.mp4")
+
+# Both derivatives, each with its own encoding. Annotated rather than written
+# inline at each loop, so `target` keeps its literal type instead of widening to
+# `str` where `build_command` will not accept it.
+BOTH_TARGETS: tuple[tuple[Target, EncodingParameters], ...] = (
+    ("analysis", ANALYSIS_ENCODING),
+    ("playback", PLAYBACK_ENCODING),
+)
 
 
 class TimestampLessOverrides(TypedDict):
@@ -138,13 +147,51 @@ def test_fractional_rate_renders_at_six_decimals() -> None:
     assert arg_after(command.argv, "-bsf:v") == "setts=ts=N/29.970030/TB"
 
 
-def test_timestamp_less_source_without_a_rate_keeps_the_generated_timestamps() -> None:
+@pytest.mark.parametrize(("target", "encoding"), BOTH_TARGETS)
+def test_a_source_stating_no_rate_anywhere_is_refused(
+    target: Target, encoding: EncodingParameters
+) -> None:
+    # Neither timestamps nor a rate the file states. There is nothing to write
+    # and nothing to re-encode to: an output rate would be an invention exactly
+    # as the muxer's own fallback was. Refusing names the reason instead.
+    with pytest.raises(TranscodeError, match="states no frame rate"):
+        _ = command_for(
+            target, encoding, **TIMESTAMP_LESS, declared_fps=0.0, container="h264"
+        )
+
+
+def test_a_raw_stream_stating_a_rate_is_not_refused() -> None:
     command = command_for(
-        "analysis", ANALYSIS_ENCODING, **TIMESTAMP_LESS, declared_fps=0.0
+        "analysis",
+        ANALYSIS_ENCODING,
+        **TIMESTAMP_LESS,
+        declared_fps=30.0,
+        container="h264",
     )
     assert command is not None
-    assert "-bsf:v" not in command.argv
-    assert "+genpts" in command.argv
+
+
+def test_the_committed_rate_less_stream_is_refused(tmp_path: Path) -> None:
+    # The fixture is HEVC because that is the codec a valid rate-less stream can
+    # be produced for: no encoder parameter omits the timing block for H.264 and
+    # the metadata bitstream filter does not strip it. What is pinned here is
+    # codec-independent -- the refusal keys on the timing provenance and the
+    # declared rate, never on the codec -- so the rule is pinned by real media
+    # even though the H.264 case that first showed it is not.
+    path = asset("raw_no_declared_rate.hevc", tmp_path / "rate_less.hevc")
+    facts = probe_media(path)
+    assert facts.timing_source == "absent"
+    assert facts.declared_fps == 0.0
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    with pytest.raises(TranscodeError, match="states no frame rate"):
+        _ = build_command(
+            verdict,
+            facts,
+            "analysis",
+            path,
+            tmp_path / "out.mp4",
+            encoding=ANALYSIS_ENCODING,
+        )
 
 
 def test_lying_header_source_never_sets_timestamps() -> None:
@@ -391,15 +438,11 @@ def test_a_source_needing_a_decode_takes_a_re_encode_on_both_targets(
     assert command.operation is Operation.REENCODE_AV1
 
 
-# Both derivatives, each with its own encoding. Annotated rather than written
-# inline at each loop, so `target` keeps its literal type instead of widening to
-# `str` where `build_command` will not accept it.
-BOTH_TARGETS: tuple[tuple[Target, EncodingParameters], ...] = (
-    ("analysis", ANALYSIS_ENCODING),
-    ("playback", PLAYBACK_ENCODING),
-)
-
-
+# The operation assertions for these fixtures live here rather than in the probe
+# suite: a probe test importing this layer would invert the dependency the
+# source layering keeps one-way, and this is the only place it could enter the
+# test tree. Their classification assertions -- what the probe reports about the
+# same files -- stay in the probe suite for the same reason.
 @requires_svtav1
 def test_an_ordinary_bare_av1_stream_is_routed_to_a_decode(
     natural_obu_clip: Path, tmp_path: Path
@@ -451,8 +494,10 @@ def test_a_rate_stating_reordered_raw_stream_is_routed_to_a_decode(
     # The HEVC counterpart of the reordered H.264 fixture: absent timing, a
     # reordering depth of 2, and a rate its bitstream states, so the refusal that
     # follows does not reach it. Only the analysis target discriminates -- the
-    # playback one already selects a re-encode because the raw container cannot
-    # be copied into mp4.
+    # playback one already selects a re-encode through client_dependent_decode,
+    # which this profile carries for hevc. Not through the container: hevc is in
+    # the mp4 stream-copy set, and both escalation counts measure zero here, so
+    # neither escalation fires.
     facts = probe_media(raw_hevc_clip)
     assert facts.timing_source == "absent"
     assert facts.coded_reordering_depth > 0

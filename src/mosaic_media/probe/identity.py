@@ -32,6 +32,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .facts import MediaFacts
+
+# Shadowed inside `video_uuid_input` and `mint_identity`, whose parameter of
+# the same name is the already-evaluated `bool`. Neither calls the predicate,
+# and a later edit that wants to must reach it under another name.
 from .ffprobe import Header, Packet, timing_supplied_by_source
 
 # The declared identity scheme, carried in both format tags. One number for
