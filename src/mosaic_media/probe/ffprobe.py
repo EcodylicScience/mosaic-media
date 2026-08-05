@@ -35,14 +35,22 @@ TimestampSource = Literal["pts", "dts", "none"]
 _ABSENT = ("", "N/A")
 _LIBAVFORMAT = "libavformat"
 
-# H.264 counts two ticks per frame, so the tick rate the sequence parameter set
-# states is twice the frame rate. The convention is codec-specific: a raw HEVC
-# stream reports one tick per frame, and halving that would be wrong by half.
-_H264_TICKS_PER_FRAME = 2.0
+# Ticks per frame by (format name, codec name), for the raw demuxers whose
+# r_frame_rate carries the bitstream's own tick rate. The convention is
+# codec-specific: H.264 states two ticks per frame, HEVC one. Restricted to the
+# raw demuxers, because r_frame_rate means something else for a container --
+# there it is the container's own frame rate, and dividing it would report a
+# fraction of the true rate (measured 12.5 on a 25 fps mp4).
+_ELEMENTARY_STREAM_TICKS_PER_FRAME: dict[tuple[str, str], float] = {
+    ("h264", "h264"): 2.0,
+    ("hevc", "hevc"): 1.0,
+}
 
-# Above this the value is not a frame rate at all: a sequence parameter set that
-# carries no timing makes libavformat report the demuxer time base instead,
-# measured at 1200000/1, which this rejects. There is no matching lower bound,
+# Above this the value is not a frame rate at all: a bitstream that carries no
+# timing makes libavformat report the demuxer time base instead, measured at
+# 1200000/1 for a rate-less stream of either codec. That is far enough above the
+# ceiling to be rejected whether it is divided by two ticks per frame or by one,
+# so the ceiling needs no codec-specific value. There is no matching lower bound,
 # because any positive rate is a real one -- a timelapse or long-observation
 # recording is coded at a fraction of a frame per second, and 1.0 would discard
 # it. The lower comparison against zero is not a judgment about which rates are
@@ -71,6 +79,7 @@ class Header:
     declared_fps: float
     elementary_stream_fps: float
     declared_frame_count: int
+    coded_reordering_depth: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,24 +126,29 @@ def parse_fraction(text: str) -> float:
 def elementary_stream_fps(
     stream: dict[str, object], container: str, codec_name: str
 ) -> float:
-    """The frame rate an H.264 elementary stream states in its own bitstream, or
+    """The frame rate a raw elementary stream states in its own bitstream, or
     0.0 when it states none.
 
-    Such a stream has no container to declare a rate, and the h264 demuxer
-    answers `avg_frame_rate` with a fixed default that is read from nothing.
-    `r_frame_rate` carries the sequence parameter set's tick rate, which is the
-    only rate the file itself states.
+    Such a stream has no container to declare a rate, and the raw demuxers
+    answer `avg_frame_rate` with a fixed default that is read from nothing.
+    `r_frame_rate` carries the bitstream's own tick rate, which is the only rate
+    the file itself states.
 
-    Restricted to the raw demuxer, whose format name is `h264`, because
-    `r_frame_rate` means something else for a container: there it is the
-    container's own frame rate, and halving it would report half the true rate
-    (measured 12.5 on a 25 fps mp4). Gating here rather than at the caller keeps
-    the field from ever holding half a real rate.
+    How many ticks that is per frame is codec-specific -- H.264 states two, HEVC
+    one -- so the rate is the tick rate divided by the codec's own convention
+    rather than by a single fixed divisor.
+
+    Restricted to the raw demuxers, because `r_frame_rate` means something else
+    for a container: there it is the container's own frame rate, and dividing it
+    would report a fraction of the true rate (measured 12.5 on a 25 fps mp4).
+    Gating here rather than at the caller keeps the field from ever holding a
+    fraction of a real rate.
     """
-    if container != "h264" or codec_name != "h264":
+    ticks_per_frame = _ELEMENTARY_STREAM_TICKS_PER_FRAME.get((container, codec_name))
+    if ticks_per_frame is None:
         return 0.0
     tick_rate = parse_fraction(str(stream.get("r_frame_rate", "0/1")))
-    rate = tick_rate / _H264_TICKS_PER_FRAME
+    rate = tick_rate / ticks_per_frame
     if not 0.0 < rate <= _MAXIMUM_PLAUSIBLE_FPS:
         return 0.0
     return rate
@@ -292,6 +306,9 @@ def read_header(path: Path) -> Header:
         declared_frame_count=0
         if frame_count_text is None or str(frame_count_text) in _ABSENT
         else int(str(frame_count_text)),
+        # How many pictures the bitstream may hold back before presenting one.
+        # A stream that omits the field reorders nothing, which is what 0 says.
+        coded_reordering_depth=int(_number(stream.get("has_b_frames"), 0.0)),
     )
 
 

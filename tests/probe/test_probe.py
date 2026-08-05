@@ -90,3 +90,15 @@ def test_an_untimed_source_opening_on_a_keyframe_still_counts_none(
         facts = probe_media(clips[name])
         assert not facts.timing_measured
         assert facts.leading_non_keyframe_frames == 0, name
+
+
+def test_the_coded_reordering_depth_separates_reordered_bitstreams(
+    clips: dict[str, Path], open_gop_clip: Path
+) -> None:
+    # The bitstream's own reordering depth, which decides whether a stream copy
+    # can recover presentation order. A raw stream carries no timestamps, so a
+    # copy synthesizes them from the packet index -- decode order -- and that is
+    # only presentation order when nothing is reordered.
+    assert probe_media(clips["raw_h264"]).coded_reordering_depth == 0
+    assert probe_media(clips["raw_fractional_rate_h264"]).coded_reordering_depth == 0
+    assert probe_media(open_gop_clip).coded_reordering_depth == 2

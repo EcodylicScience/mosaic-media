@@ -16,10 +16,20 @@ VIDEO_EXTENSIONS: frozenset[str] = frozenset(
         ".mpg",
         ".mpeg",
         ".wmv",
-        # A raw H.264 elementary stream: no container, no timestamps. Probed
-        # with timing_measured=False and routed to a timestamp-generating
-        # remux by the analysis verdict.
+        # Raw elementary streams: no container, and so no packet timestamps.
+        # The analysis verdict routes such a file to a remux that generates
+        # them. Every suffix the two raw demuxers register is taken, in the
+        # order they register them, because each one denotes a raw video
+        # stream: these demuxers carry no audio-only, subtitle, still-image or
+        # manifest spelling the way the container demuxers do. That is a
+        # property of these two, not a rule for every demuxer.
+        ".h26l",
         ".h264",
+        ".264",
+        ".avc",
+        ".hevc",
+        ".h265",
+        ".265",
     }
 )
 

@@ -46,6 +46,7 @@ AssetName = Literal[
     "open_gop.mp4",
     "raw.h264",
     "raw_fractional_rate.h264",
+    "raw_no_declared_rate.hevc",
 ]
 
 
@@ -511,6 +512,23 @@ def hevc_clip(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     """
     root = tmp_path_factory.mktemp("hevc")
     yield asset("hevc.mp4", root / "hevc.mp4")
+
+
+@pytest.fixture(scope="session")
+def raw_hevc_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A raw HEVC elementary stream that states its rate in its own bitstream.
+
+    Copied from the committed HEVC asset rather than encoded: a stream copy needs
+    no encoder, and the encoders that would produce HEVC directly are the ones
+    this package does not name.
+    """
+    root = tmp_path_factory.mktemp("raw_hevc")
+    return build(
+        root / "raw.hevc",
+        "-c",
+        "copy",
+        source=["-i", str(asset("hevc.mp4", root / "hevc.mp4"))],
+    )
 
 
 @pytest.fixture(scope="session")

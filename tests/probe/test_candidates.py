@@ -15,6 +15,25 @@ def test_non_video_extension_is_not_a_candidate() -> None:
     assert not is_candidate_video(Path("index.csv"))
 
 
+def test_every_suffix_the_raw_demuxers_register_is_a_candidate() -> None:
+    # ffmpeg registers h26l,h264,264,avc for H.264 and hevc,h265,265 for HEVC.
+    # The whole of both lists is accepted, bare numbers included, because every
+    # one of them denotes a raw video elementary stream -- neither demuxer
+    # registers an audio-only, subtitle or still-image spelling that would have
+    # to be filtered out first.
+    registered = ("h26l", "h264", "264", "avc", "hevc", "h265", "265")
+    for suffix in registered:
+        assert is_candidate_video(Path(f"recording.{suffix}")), suffix
+
+
+def test_raw_elementary_stream_suffixes_match_case_insensitively() -> None:
+    # The same case-folding the container suffixes get, which a tool writing an
+    # uppercase name depends on.
+    assert is_candidate_video(Path("recording.HEVC"))
+    assert is_candidate_video(Path("recording.H265"))
+    assert is_candidate_video(Path("recording.AVC"))
+
+
 def test_every_exported_extension_is_reachable_through_the_predicate() -> None:
     # The set is exported and the predicate is the only way to consult it, so
     # the two must agree on every member. They can disagree silently: the

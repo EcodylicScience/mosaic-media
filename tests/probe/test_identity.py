@@ -38,6 +38,11 @@ GOLDEN_HEADER = Header(
     declared_fps=25.0,
     elementary_stream_fps=0.0,
     declared_frame_count=50,
+    # Not hashed: content_digest_input reads an explicit list of header fields
+    # and this is not on it, and video_uuid_input never sees a header at all.
+    # Nonzero for the same reason every other value here is distinct, so a
+    # transposition shows up in the vectors below.
+    coded_reordering_depth=2,
 )
 
 GOLDEN_PACKETS = (

@@ -35,6 +35,7 @@ CLEAN = MediaFacts(
     max_gop_bytes=100_000,
     discard_flagged_packets=0,
     leading_non_keyframe_frames=0,
+    coded_reordering_depth=0,
     max_timestamp_gap_frame_periods=1.0,
     timing_measured=True,
     video_uuid="6ba7b810-9dad-81d1-80b4-00c04fd430c8",

@@ -96,6 +96,20 @@ ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=30:duration=2.6" \
 ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x240:rate=25:duration=2" \
     -c:v libx265 -pix_fmt yuv420p -g 25 -tag:v hvc1 $Q hevc.mp4
 
+# raw_no_declared_rate.hevc -- 25 frames, no container, no timestamps, and no
+# timing block in the bitstream. The rate-less counterpart to raw.h264: with
+# nothing stating a rate, the demuxer answers r_frame_rate with its own time
+# base, 1200000/1, which is not a frame rate at all and is what the probe's
+# plausibility ceiling rejects. It cannot be derived from hevc.mp4 by copying --
+# a -c copy carries the timing block along with the stream, and the one filter
+# that edits that block, hevc_metadata=tick_rate=0, writes a file that will not
+# probe at all ("Invalid data found when processing input"), with no other
+# timing option to reach for. Suppressing the block while leaving the stream
+# valid is an encoder parameter, so this clip is encoded rather than remuxed.
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=128x96:rate=25" -frames:v 25 \
+    -c:v libx265 -x265-params "log-level=none:vui-timing-info=0" \
+    -f hevc tests/assets/raw_no_declared_rate.hevc
+
 # open_gop.mp4 -- 50 frames, 25 fps, GOP 12, open GOP with B-frames. Every
 # keyframe after the first is followed in decode order by pictures that precede
 # it in presentation order (measured: the keyframe at pts 0.480 is followed by

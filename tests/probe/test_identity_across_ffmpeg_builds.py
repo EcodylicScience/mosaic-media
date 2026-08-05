@@ -22,7 +22,6 @@ from typing import Literal
 
 import pytest
 
-from mosaic_media.probe.candidates import is_candidate_video
 from mosaic_media.probe.facts import MediaFacts
 from mosaic_media.probe.probe import probe_media
 from tests.helpers.media_fixtures import ASSETS
@@ -77,8 +76,27 @@ def _configured_prefixes() -> tuple[Path, ...]:
     )
 
 
+# The provenance document, the one committed file that is not an asset.
+_NOT_AN_ASSET = "README.md"
+
+
 def _committed_assets() -> tuple[Path, ...]:
-    return tuple(sorted(path for path in ASSETS.iterdir() if is_candidate_video(path)))
+    """Every committed asset, selected by exclusion rather than by suffix.
+
+    Deliberately not filtered through ingestion policy: which suffixes a
+    consumer would offer this package and which committed files this suite
+    probes are different questions. Filtering by the former silently drops an
+    asset whose suffix no consumer ingests -- and a raw elementary stream is
+    exactly what demuxer-output drift is most likely to move, so it belongs in
+    the corpus whether or not it is a candidate for ingestion.
+    """
+    return tuple(
+        sorted(
+            path
+            for path in ASSETS.iterdir()
+            if path.name != _NOT_AN_ASSET and path.is_file()
+        )
+    )
 
 
 def _prepended(entry: Path, existing: str) -> str:

@@ -71,6 +71,15 @@ class MediaFacts:
     such a stream to through `unreliable_timing_metadata` is a stream copy, and
     a copy drops exactly the frames this counts.
 
+    `coded_reordering_depth` is how many pictures the bitstream may hold back
+    before presenting one, which is what decides whether decode order is
+    presentation order. Zero is a measurement rather than an absence: it says
+    the bitstream reorders nothing, so a stream copy that synthesizes timestamps
+    from the packet index labels the right pictures. It is read from the coded
+    stream and is meaningful for every source, but only matters where the
+    timestamps are not presentation timestamps -- a container carrying real ones
+    already knows the order.
+
     `max_timestamp_gap_frame_periods` is the widest step between neighboring
     presentation timestamps, in frame periods -- 1.0 for a file whose timestamps
     are exactly uniform, more where a container quantizes them to a coarse tick
@@ -118,6 +127,7 @@ class MediaFacts:
     max_gop_bytes: int
     discard_flagged_packets: int
     leading_non_keyframe_frames: int
+    coded_reordering_depth: int
     max_timestamp_gap_frame_periods: float
     timing_measured: bool
     video_uuid: str

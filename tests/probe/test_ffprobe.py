@@ -102,13 +102,19 @@ def test_elementary_stream_fps_rejects_a_zero_denominator() -> None:
     assert elementary_stream_fps(payload, "h264", "h264") == 0.0
 
 
-def test_elementary_stream_fps_is_absent_for_a_raw_hevc_stream() -> None:
-    # The format-name condition is what rejects this: the raw HEVC demuxer's
-    # format name is "hevc", not "h264". The codec condition alongside it
-    # restates the tick convention at the point of the halving -- HEVC counts
-    # one tick per frame, so halving its rate would be wrong by half -- and is
-    # deliberately redundant with the format name.
+def test_elementary_stream_fps_reads_one_tick_per_frame_for_a_raw_hevc_stream() -> None:
+    # HEVC states one tick per frame where H.264 states two, so the H.264 divisor
+    # does not carry over: halving here would report half the real rate. The rate
+    # matters because a raw stream with none is refused rather than remuxed, and
+    # a codec whose rate is never derived would be refused entirely.
     payload = stream_payload(r_frame_rate="30/1")
+    assert elementary_stream_fps(payload, "hevc", "hevc") == 30.0
+
+
+def test_elementary_stream_fps_rejects_the_demuxer_time_base_for_hevc() -> None:
+    # The same guard H.264 has. A bitstream carrying no timing makes libavformat
+    # report the demuxer time base, which is not a frame rate at all.
+    payload = stream_payload(r_frame_rate="1200000/1")
     assert elementary_stream_fps(payload, "hevc", "hevc") == 0.0
 
 

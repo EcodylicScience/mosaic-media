@@ -61,6 +61,7 @@ import mosaic_media.thumbnail.extract
 import mosaic_media.transcode
 import mosaic_media.transcode.commands
 import mosaic_media.transcode.convert
+import mosaic_media.transcode.errors
 """
 
 

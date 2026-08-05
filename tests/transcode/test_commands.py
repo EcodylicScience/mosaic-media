@@ -19,7 +19,7 @@ from mosaic_media.transcode.commands import (
     build_command,
 )
 
-# The 25-field clean baseline lives once, in the copied probe suite; reuse it
+# The 34-field clean baseline lives once, in the copied probe suite; reuse it
 # instead of restating it (repo precedent: tests/probe/test_sequence.py imports
 # CLEAN the same way).
 from tests.probe.test_verdict import CLEAN

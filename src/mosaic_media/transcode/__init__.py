@@ -13,11 +13,11 @@ from .convert import (
     DEFAULT_TRANSCODE_TIMEOUT_SECONDS,
     CancelCheck,
     ProgressCallback,
-    TranscodeError,
     TranscodeProgress,
     TranscodeResult,
     run_transcode,
 )
+from .errors import TranscodeError
 
 __all__ = [
     "ANALYSIS_ENCODING",

@@ -48,6 +48,7 @@ from ..probe.probe import probe_media
 from ..probe.verdict import Verdict, derive
 
 from .commands import EncodingParameters, Operation, Target, build_command
+from .errors import TranscodeError
 
 DEFAULT_TRANSCODE_TIMEOUT_SECONDS = 3600.0
 
@@ -63,13 +64,6 @@ _PROGRESS_INTERVAL_SECONDS = 0.1
 _PROGRESS_POLL_SECONDS = 0.1
 # Grace given to a terminated child to exit before it is killed outright.
 _TERMINATE_GRACE_SECONDS = 5.0
-
-
-class TranscodeError(RuntimeError):
-    """A transcode failed to run, or its output was not clean for the target.
-
-    Terminal: a caller must not respond by scheduling another transcode.
-    """
 
 
 @dataclass(frozen=True, slots=True)
