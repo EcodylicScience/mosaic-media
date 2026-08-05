@@ -171,7 +171,7 @@ read `None`, the command line would report it already analysis-clean and return,
 and the refusal specified below would never be reached on the analysis target.
 
 Adding `synthesized` alongside costs nothing: the re-encode reason set is tested
-first, so the operation is still a re-encode, and a consumer sees a reason that is
+first, so the operation is still a re-encode, and the reason set carries something
 true of the file.
 
 ### A stream copy cannot recover this timing
@@ -249,8 +249,8 @@ made after.
 `convert.py` today, which already imports `commands.py`, so raising it from
 `commands.py` would be a circular import and a breach of the one-way import rule.
 A dedicated error module both import is the package's own precedent, matching
-`probe/errors.py`. It stays re-exported from the transcode package, so no consumer
-import changes, and its docstring widens: it currently covers a transcode that ran
+`probe/errors.py`. It stays re-exported from the transcode package, so the import
+path the type is reached by does not change, and its docstring widens: it currently covers a transcode that ran
 and failed or produced unclean output, and now also covers a refusal to build a
 command at all.
 
@@ -365,9 +365,9 @@ Both hash inputs are explicit field lists, so `timing_source` and the coded
 reordering depth enter neither and add no re-mint of their own.
 
 No identity scheme version bump. A bump re-mints every value in every corpus, and
-the change reaches two formats. A consumer holding a row for a file of either
-format re-probes it; the row's stored `video_uuid` no longer matches what the
-probe now mints, and that is the only detectable effect.
+the change reaches two formats. A stored `video_uuid` for a file of either format
+no longer matches what the probe now mints, and re-probing is what reconciles it;
+that is the only detectable effect.
 
 ## Tests
 
@@ -458,47 +458,26 @@ indexed behavior is unchanged and stays asserted: the sequential raise at frame
 window shape `test_the_delivery_check_stays_silent_across_a_healthy_source`
 sweeps.
 
-## Consumers
+## What travels outward
 
 `MediaFacts` loses `timing_measured` and gains `timing_source` and
-`coded_reordering_depth`, so the backend's `FACT_FIELDS` gains two columns and
-loses one.
+`coded_reordering_depth`, so any store holding these fields column by column
+gains two and loses one.
 
 **A stored row is re-probed, never backfilled.** The boolean does not map to the
 literal: `True` covers `presentation`, `decode` and `synthesized`, and the
 reordering reason turns on telling the first two apart, so any fill produces a
 wrong verdict for some rows rather than an incomplete one. `coded_reordering_depth`
-admits no backfill either, since zero is the value that means no reordering.
+admits no backfill either, since zero is the value meaning no reordering.
 
-A row missing the new columns needs no special handling, because the consumer's
-own reader already refuses to build facts from an incomplete row: it returns
-nothing when any fact column is null, which is its pending-probe signal. Such a
-row therefore produces no facts and reaches no verdict until the file is
-re-probed.
-
-`compare_for_duplicate` does change observable outcomes: two files of an
+`compare_for_duplicate` changes an observable outcome: two files of an
 invented-timing format that compare `duplicate` today compare `timing_unknown`
-after, and the command line maps that verdict to its own exit code.
+after.
 
 `presentation_timing_requires_decode` is one new reason literal, added to both
-the analysis and the stream vocabularies and to the hard stream set. **No
-consumer branches on an individual reason**, measured: the backend's response
-schemas type them as lists of the aliases this package exports and sort them
-through without a per-reason case, and the sequence import metadata types them as
-plain string lists. A new literal is therefore additive, and the reordering
-issue's requirement that consumers handle it rather than fall through is met
-without a change. The requirement predicted a cost that does not exist.
-
-The analysis toolkit needs nothing either. It never names the provenance field,
-and it reconstructs facts through a row conversion that already turns a stale
-row into an error naming the remedy -- re-probe the media index -- which is the
-designed behavior for a field set that moved.
-
-What the backend does need is its own migration, run by an operator against a
-live database, which cannot happen here. It already tracks that work as an issue
-covering three fields the preceding package added; these fields land in the same
-migration and touch the same sites, so they are appended to that issue rather
-than implemented in this package.
+the analysis and the stream vocabularies and to the hard stream set. Both
+vocabularies are exported `Literal` aliases, so a reader of a reason set widens
+by re-typing against them rather than by enumerating.
 
 ## Out of scope
 
@@ -519,9 +498,9 @@ than implemented in this package.
 - **`reordered-raw-streams-get-decode-order-timing`.** The reordering depth is a
   fact, the verdict expresses the reason, both copy remuxes give way to a
   re-encode, and a generated reordered fixture pins that its frames land in
-  presentation order. Its consumer bullet is met by measurement rather than by
-  work: no consumer enumerates individual reasons, so none can fall through on a
-  new one.
+  presentation order. Its last bullet is met by measurement rather than by work:
+  the reason vocabularies are exported `Literal` aliases and nothing branches on
+  an individual reason, so a new literal is additive.
 - **`raw-stream-remux-relies-on-a-deprecated-muxer-fallback`.** A stream stating
   no rate is refused with a reason naming why, on both targets, and a committed
   fixture with no video usability information pins it.

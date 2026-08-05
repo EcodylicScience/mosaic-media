@@ -2,7 +2,14 @@ import hashlib
 import uuid
 from pathlib import Path
 
-from mosaic_media.probe.ffprobe import Header, Packet, read_header, scan_packets
+from mosaic_media.probe.ffprobe import (
+    Header,
+    Packet,
+    read_header,
+    scan_packets,
+    timing_source_for,
+    timing_supplied_by_source,
+)
 from mosaic_media.probe.identity import (
     CONTENT_FORMAT_TAG,
     IDENTITY_SCHEME,
@@ -68,7 +75,10 @@ def test_both_format_tags_are_built_from_one_scheme_version() -> None:
 def identity_of(path: Path) -> Identity:
     header = read_header(path)
     packets, source = scan_packets(path, header.video_position)
-    return mint_identity(header, packets, timing_measured=source != "none")
+    # Derived the same way the probe derives it, so this helper cannot disagree
+    # with what a probed file was actually minted with.
+    supplied = timing_supplied_by_source(timing_source_for(source, header.container))
+    return mint_identity(header, packets, timing_supplied_by_source=supplied)
 
 
 def test_mint_identity_is_deterministic(clips: dict[str, Path]) -> None:

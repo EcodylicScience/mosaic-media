@@ -1,9 +1,10 @@
 """A raw elementary stream probes with honest, unmeasured timing.
 
 No container means no packet timestamps: fps and duration are unmeasurable
-placeholders, the frame count is the packet count, and the analysis verdict
-routes the file to a timestamp-generating remux -- never to a re-encode, which
-would need a measured rate to resample to.
+placeholders, and the frame count is the packet count. The analysis verdict
+routes a stream carrying no timestamps to a timestamp-generating remux, which
+needs no measured rate to resample to; a stream whose timing a demultiplexer
+invented has timestamps, and routes to a re-encode instead.
 """
 
 from pathlib import Path
@@ -19,7 +20,7 @@ from tests.helpers.media_fixtures import asset
 
 def test_raw_h264_probes_with_unmeasured_timing(clips: dict[str, Path]) -> None:
     facts = probe_media(clips["raw_h264"])
-    assert facts.timing_measured is False
+    assert facts.timing_source == "absent"
     assert facts.container == "h264"
     assert facts.codec_name == "h264"
     assert facts.frame_count == 60
@@ -36,7 +37,7 @@ def test_raw_stream_declares_the_rate_its_bitstream_states(
     # for every raw stream regardless of content, so 25 here means the demuxer
     # default survived.
     facts = probe_media(clips["raw_h264"])
-    assert facts.timing_measured is False
+    assert facts.timing_source == "absent"
     assert facts.declared_fps == 30.0
 
 
@@ -64,7 +65,7 @@ def test_container_stream_still_declares_its_average_rate(
     clips: dict[str, Path],
 ) -> None:
     facts = probe_media(clips["cfr_mp4"])
-    assert facts.timing_measured is True
+    assert facts.timing_source == "presentation"
     assert facts.declared_fps == 25.0
 
 

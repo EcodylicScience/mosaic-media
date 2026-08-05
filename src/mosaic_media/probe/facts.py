@@ -2,6 +2,10 @@
 
 from dataclasses import dataclass
 
+# This dependency runs one way and must stay that way: the facts read the
+# probe's vocabulary, and `ffprobe` never imports this module.
+from .ffprobe import TimingSource
+
 
 @dataclass(frozen=True, slots=True)
 class MediaFacts:
@@ -12,20 +16,26 @@ class MediaFacts:
     for every stream whose packets carry timestamps. For one whose packets carry
     none, `avg_frame_rate` is a demuxer default read from nothing in the file,
     and `declared_fps` instead carries the rate the elementary stream states in
-    its own bitstream, or 0.0 when no bitstream rate is derived. `timing_measured`
+    its own bitstream, or 0.0 when no bitstream rate is derived. `timing_source`
     is what tells the two apart.
 
-    `timing_measured` is False for a stream whose packets carry no timestamps
-    at all (a raw elementary stream such as a bare `.h264` file). Then `fps`
-    and `duration` read 0.0 and `constant_frame_rate` reads False as
-    placeholders, not measurements; `frame_count` is still real (the packet
-    count).
+    `timing_source` records where the timing came from. `presentation` and
+    `decode` are both timing the file supplied, the second read from decode
+    timestamps because presentation ones were absent for every packet.
 
-    It is required rather than defaulting True, because True is the unsafe
-    value: a caller that omitted it would assert measured timing for a file
-    whose timing was never measured, and nothing downstream could tell that
-    apart from a real measurement. An absent digest is at least detectably
-    absent; an absent boolean is not.
+    `absent` is a stream whose packets carry no timestamps at all (a raw
+    elementary stream such as a bare `.h264` file). Then `fps` and `duration`
+    read 0.0 and `constant_frame_rate` reads False as placeholders, not
+    measurements; `frame_count` is still real (the packet count).
+
+    `synthesized` is a format whose demultiplexer manufactured the timestamps
+    the file does not carry. There are timestamps to measure, so the timing
+    values are arithmetic rather than placeholders, but every one of them
+    describes the invention rather than the file.
+
+    It is required rather than defaulted, because any default asserts a
+    provenance nothing measured. An absent digest is at least detectably
+    absent; a provenance that filled itself in is not.
 
     `video_uuid` and `content_digest` are the two derived identity values.
     `video_uuid` pins content and exact timing and is the only one that may be
@@ -129,7 +139,7 @@ class MediaFacts:
     leading_non_keyframe_frames: int
     coded_reordering_depth: int
     max_timestamp_gap_frame_periods: float
-    timing_measured: bool
+    timing_source: TimingSource
     video_uuid: str
     content_digest: str
     identity_scheme: str

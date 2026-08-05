@@ -6,6 +6,7 @@ from typing import TypedDict
 
 import pytest
 
+from mosaic_media.probe.ffprobe import TimingSource
 from mosaic_media.probe.policy import CHROME_149, DEFAULT_THRESHOLDS
 from mosaic_media.probe.verdict import derive
 from mosaic_media.transcode import commands as commands_module
@@ -37,18 +38,18 @@ class TimestampLessOverrides(TypedDict):
     `object` not being assignable to `bool`.
     """
 
-    timing_measured: bool
+    timing_source: TimingSource
     fps: float
     duration: float
     constant_frame_rate: bool
 
 
 # A source whose packets carry no timestamps. The measured values are cleared
-# alongside the flag because probe_media sets them to placeholders whenever
-# timing is unmeasured; facts mixing timing_measured=False with measured values
-# model a state the probe never mints.
+# alongside the provenance because probe_media sets them to placeholders
+# whenever the file supplies no timing; facts pairing an absent provenance with
+# measured values model a state the probe never mints.
 TIMESTAMP_LESS: TimestampLessOverrides = {
-    "timing_measured": False,
+    "timing_source": "absent",
     "fps": 0.0,
     "duration": 0.0,
     "constant_frame_rate": False,

@@ -532,6 +532,63 @@ def raw_hevc_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture(scope="session")
+def natural_obu_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A bare AV1 stream from an ordinary encode.
+
+    Distinct from the frame-split stream, which carries a second defect -- more
+    packets than pictures -- that would confound a test about provenance alone.
+    This one has a packet per picture, so nothing but the provenance is wrong.
+    """
+    root = tmp_path_factory.mktemp("natural_obu")
+    encoded = build(root / "av1.mp4", "-c:v", "libsvtav1", "-pix_fmt", "yuv420p")
+    return build(root / "natural.obu", "-c", "copy", source=["-i", str(encoded)])
+
+
+@pytest.fixture(scope="session")
+def reordered_raw_h264_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A raw H.264 stream coded with reordering, carrying no timestamps.
+
+    Copied from the committed open-GOP asset rather than encoded: a stream copy
+    needs no encoder, and the ones that would produce a reordered H.264 stream
+    directly are the ones this package does not name. Measured on the result:
+    reordering depth 2, no packet timestamps, a declared rate of 25.
+    """
+    root = tmp_path_factory.mktemp("reordered_raw")
+    return build(
+        root / "reordered.h264",
+        "-c",
+        "copy",
+        source=["-i", str(asset("open_gop.mp4", root / "open_gop.mp4"))],
+    )
+
+
+@pytest.fixture(scope="session")
+def invented_timing_clips(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
+    """One file per format whose demultiplexer manufactures timestamps.
+
+    None of these encoders carries a copyleft obligation. Two arguments are
+    load-bearing and were found by the muxer refusing the file without them: the
+    uncompressed stream must be told a planar pixel format, because the muxer
+    accepts only yuv444p, yuv422p, yuv420p, yuv411p and gray8 while the synthetic
+    source is rgb24; and H.263 accepts only a fixed set of dimensions, so the
+    frames are scaled to the smallest of them.
+    """
+    root = tmp_path_factory.mktemp("invented_timing")
+    made: dict[str, Path] = {}
+    made["mpegvideo"] = build(
+        root / "raw.m2v", "-c:v", "mpeg2video", "-f", "mpeg2video"
+    )
+    made["yuv4mpegpipe"] = build(
+        root / "raw.y4m", "-c:v", "rawvideo", "-pix_fmt", "yuv420p"
+    )
+    made["h263"] = build(
+        root / "raw.h263", "-vf", "scale=128x96", "-c:v", "h263", "-f", "h263"
+    )
+    made["jpeg_pipe"] = build(root / "raw.mjpeg", "-c:v", "mjpeg", "-f", "mjpeg")
+    return made
+
+
+@pytest.fixture(scope="session")
 def cfr_mp4_clip(clips: dict[str, Path]) -> Path:
     return clips["cfr_mp4"]
 

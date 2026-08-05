@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .facts import MediaFacts
+from .ffprobe import timing_supplied_by_source
 from .policy import (
     HARD_STREAM_REASONS,
     AnalysisReason,
@@ -64,10 +65,10 @@ def derive(
         stream.add("unsupported_container")
     if facts.codec_name not in profile.codecs:
         stream.add("unsupported_codec")
-    if facts.timing_measured and not facts.constant_frame_rate:
-        # Variable frame rate is a measured claim; an unmeasured stream must
-        # not fire it, or a raw elementary stream would be re-encoded when a
-        # timestamp-generating remux is the fix.
+    if timing_supplied_by_source(facts.timing_source) and not facts.constant_frame_rate:
+        # Variable frame rate is a measured claim; a stream whose timing the
+        # file did not supply must not fire it, or a raw elementary stream would
+        # be re-encoded when a timestamp-generating remux is the fix.
         stream.add("variable_frame_rate")
         analysis.add("variable_frame_rate")
     if facts.rotation_degrees != 0:
@@ -107,9 +108,14 @@ def derive(
     # whole file's header can be said to lie about it.
     if not truncated and _timing_metadata_lies(facts):
         analysis.add("unreliable_timing_metadata")
-    if not facts.timing_measured:
-        # No timestamps at all: fps, duration, and the frame-to-time mapping
-        # are undefined until a remux generates real ones.
+    if facts.timing_source in ("absent", "synthesized"):
+        # Timing the file did not supply. With none at all the frame-to-time
+        # mapping is undefined until a remux generates real timestamps; with
+        # timing the demultiplexer invented, every value measured from it
+        # describes the invention rather than the file. `absent` is what must
+        # not be dropped here: a raw stream stating no rate carries no other
+        # analysis reason, so without this one the file reports as already
+        # analysis-clean and the refusal that follows is never reached.
         analysis.add("unreliable_timing_metadata")
 
     stream_reasons = frozenset(stream)

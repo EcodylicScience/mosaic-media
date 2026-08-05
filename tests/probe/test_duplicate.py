@@ -45,21 +45,37 @@ def test_an_untimed_side_reports_timing_unknown(clips: dict[str, Path]) -> None:
 def test_a_zero_duration_timed_side_reports_timing_unknown(
     clips: dict[str, Path],
 ) -> None:
-    # The timing guard has two halves: an unset timing flag, and a non-positive
-    # duration. This pins the second on its own. A consumer that reconstructs
-    # facts from persisted columns without the timing flag gets timing_measured
-    # True by nothing but its type default, so a genuinely untimed row can carry
-    # True with a 0.0 duration -- the shape the untimed-side test above cannot
-    # produce. The guard must still fire on the duration, or the tolerance
-    # derivation divides by zero.
+    # The timing guard has two halves: timing the file did not supply, and a
+    # non-positive duration. This pins the second on its own, stating the
+    # provenance explicitly so nothing but the duration can fire the guard.
+    #
+    # The hazard the second half once covered is gone. `timing_source` is a
+    # required `Literal` with no default, so facts can no longer claim supplied
+    # timing by leaving the field out. The duration clause stays because the
+    # function is total over every `MediaFacts` a caller can construct, and
+    # supplied timing with a zero duration is one of them -- without the clause
+    # the tolerance derivation divides by zero.
     probed = probe_media(clips["cfr_mp4"])
-    zero_duration = dataclasses.replace(probed, duration=0.0)
-    assert zero_duration.timing_measured is True
+    zero_duration = dataclasses.replace(
+        probed, timing_source="presentation", duration=0.0
+    )
     assert zero_duration.content_digest != ""
     result = compare_for_duplicate(zero_duration, zero_duration)
     assert result.verdict == "timing_unknown"
     assert result.fps_delta is None
     assert result.duration_delta is None
+
+
+def test_two_files_whose_timing_was_invented_compare_as_timing_unknown(
+    clips: dict[str, Path],
+) -> None:
+    # The comparison needs timing that measures the file. Timing a demultiplexer
+    # manufactured describes the invention, so two such files can agree on it
+    # while being different recordings.
+    probed = probe_media(clips["cfr_mp4"])
+    left = dataclasses.replace(probed, timing_source="synthesized")
+    right = dataclasses.replace(probed, timing_source="synthesized")
+    assert compare_for_duplicate(left, right).verdict == "timing_unknown"
 
 
 def test_a_distinct_digest_outranks_an_untimed_side(clips: dict[str, Path]) -> None:
@@ -120,8 +136,8 @@ def test_facts_without_a_digest_report_unminted_not_duplicate(
     right = dataclasses.replace(
         probed, content_digest="", video_uuid="", width=1920, height=1080
     )
-    assert left.timing_measured is True
-    assert right.timing_measured is True
+    assert left.timing_source == "presentation"
+    assert right.timing_source == "presentation"
     assert left.fps == right.fps
     assert left.duration == right.duration
     result = compare_for_duplicate(left, right)

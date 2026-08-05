@@ -31,9 +31,41 @@ VERSION_TIMEOUT_SECONDS = 30
 PAYLOAD_HASH_ALGORITHM = "CRC32"
 
 TimestampSource = Literal["pts", "dts", "none"]
+TimingSource = Literal["presentation", "decode", "synthesized", "absent"]
 
 _ABSENT = ("", "N/A")
 _LIBAVFORMAT = "libavformat"
+
+# Formats whose demultiplexer manufactures timestamps the file does not carry.
+# Verified one at a time, by writing a source with non-uniform timing through the
+# format and reading it back: timing the file supplies survives, timing the
+# demultiplexer invents comes back as a uniform grid.
+#
+#   FILTER="setpts='if(gt(N,9),PTS+3/TB/25,PTS)'"
+#   ffmpeg -f lavfi -i "testsrc2=size=128x96:rate=25" -frames:v 20 -vf "$FILTER" \
+#       -fps_mode passthrough -c:v CODEC -f MUXER sample.EXT
+#   ffprobe -select_streams v:0 -show_entries packet=pts_time -of csv=p=0 sample.EXT
+#
+# The source carries a three-frame gap after the tenth picture, so a format that
+# supplies its own timing reads "... 0.360000 0.520000 ..." and one that does not
+# reads "... 0.360000 0.400000 ...". -fps_mode passthrough is load-bearing:
+# without it the encoder retimes the frames before the muxer sees them, every
+# format reads back uniform, and the measurement says nothing.
+#
+# h263 is the sharpest case: its demuxer does not merely flatten the spacing but
+# reports a rate the file never had. Measured on the recipe clip above, 29.66
+# frames per second for a 25 frames per second source; a differently built h263
+# clip, from the same 25, measures 29.849. Two wrong rates from one source rate,
+# so a test on this behavior must assert a bound rather than a value.
+#
+# This is a denylist, so a format that has never been put through the measurement
+# is trusted. That is the unsafe direction, and it is the reason to extend this
+# list by measuring rather than by reasoning about what a container is: m4v and
+# ivf are bare streams that nonetheless carry real per-picture timing, and avi
+# carries genuine timing through the decode-timestamp path.
+INVENTED_TIMING_CONTAINERS = frozenset(
+    {"obu", "mpegvideo", "yuv4mpegpipe", "h263", "jpeg_pipe"}
+)
 
 # Ticks per frame by (format name, codec name), for the raw demuxers whose
 # r_frame_rate carries the bitstream's own tick rate. The convention is
@@ -152,6 +184,32 @@ def elementary_stream_fps(
     if not 0.0 < rate <= _MAXIMUM_PLAUSIBLE_FPS:
         return 0.0
     return rate
+
+
+def timing_source_for(source: TimestampSource, container: str) -> TimingSource:
+    """Where the timing came from, which is what says whether it can be trusted.
+
+    The order is load-bearing. A format on the invented-timing list is
+    `synthesized` whether its timestamps arrive as presentation or decode
+    timestamps, because some of them arrive through the decode-timestamp
+    fallback -- the same path a genuine container takes -- and reading the
+    source first would call their invented timing file-supplied.
+    """
+    if source == "none":
+        return "absent"
+    if container in INVENTED_TIMING_CONTAINERS:
+        return "synthesized"
+    return "presentation" if source == "pts" else "decode"
+
+
+def timing_supplied_by_source(timing_source: TimingSource) -> bool:
+    """Whether the file itself supplied the timing.
+
+    The one place this membership test is written. It is hashed into `video_uuid`
+    and read by the duplicate comparison, so a second copy of it would drift and
+    take identity or a duplicate verdict with it.
+    """
+    return timing_source in ("presentation", "decode")
 
 
 def _number(value: object, default: float) -> float:
@@ -412,8 +470,8 @@ def scan_packets(
     stream such as a bare `.h264` file -- returns its packets with source
     `"none"`: the sizes, keyframe flags, and byte offsets are real, but `time`
     is a 0.0 placeholder that no timing or seeking consumer may read.
-    `probe_media` skips the grid fit for such a stream and marks the facts
-    `timing_measured=False`; the io packet scan refuses the file instead.
+    `probe_media` skips the grid fit for such a stream and records that the
+    file supplied no timing; the io packet scan refuses the file instead.
 
     Parsing the comma-separated rows is the costliest part of this module: on a
     file of 286256 packets it takes 281 ms, roughly three times the grid fit that

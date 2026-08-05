@@ -76,7 +76,7 @@ def test_an_untimed_source_cut_mid_stream_counts_its_leading_frames(
     # Packet order carries the signal instead. The same cut as the AVI above,
     # so the same 24.
     facts = probe_media(raw_starting_on_non_keyframes)
-    assert not facts.timing_measured
+    assert facts.timing_source == "absent"
     assert facts.leading_non_keyframe_frames == 24
     assert facts.frame_count == 49
 
@@ -88,7 +88,7 @@ def test_an_untimed_source_opening_on_a_keyframe_still_counts_none(
     # streams are what say the change is confined to the shape it was made for.
     for name in ("raw_h264", "raw_fractional_rate_h264"):
         facts = probe_media(clips[name])
-        assert not facts.timing_measured
+        assert facts.timing_source == "absent", name
         assert facts.leading_non_keyframe_frames == 0, name
 
 

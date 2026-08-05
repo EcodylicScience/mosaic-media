@@ -633,10 +633,15 @@ def test_a_source_declaring_more_frames_than_it_decodes_raises(
     # subclass: a bare AV1 stream whose hidden frames each took a synthesized
     # timestamp, so the frame model declares 74 frames over 50 pictures. A
     # subclass cannot pin this half of it -- it stands in for the decoder and so
-    # begins after the probe, while what makes this source dangerous is that
-    # the probe finds nothing wrong with it. Both reader paths raise, on
-    # different mechanisms: with facts and no index the spacing between decoded
-    # frames, without facts the index entry for the frame being returned.
+    # begins after the probe. Both reader paths raise, on different mechanisms:
+    # with facts and no index the spacing between decoded frames, without facts
+    # the index entry for the frame being returned.
+    #
+    # The probe cannot see the packet-to-picture divergence itself: every
+    # structural measurement below reads clean. What it does see is that this
+    # container's timing was invented rather than carried by the file, and it
+    # routes the source on that ground alone. The reader's raise is the backstop
+    # for a source that reaches it anyway.
     path = av1_split_clips["obu"]
     facts = probe_media(path)
     pictures = decode_md5s(path)
@@ -645,7 +650,9 @@ def test_a_source_declaring_more_frames_than_it_decodes_raises(
     assert facts.max_timestamp_gap_frame_periods == pytest.approx(1.0)
     assert facts.discard_flagged_packets == 0
     assert facts.leading_non_keyframe_frames == 0
-    assert derive(facts, CHROME_149, DEFAULT_THRESHOLDS).analysis_transcode is None
+    assert (
+        derive(facts, CHROME_149, DEFAULT_THRESHOLDS).analysis_transcode == "required"
+    )
     for label, reader in (
         ("frame periods later", VideoReader(path, facts=facts)),
         ("frame 1:", VideoReader(path)),

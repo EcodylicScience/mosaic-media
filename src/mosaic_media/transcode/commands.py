@@ -365,11 +365,12 @@ def build_command(
     operation = _select_operation(verdict, facts, target)
     if operation is None:
         return None
-    # Only a source whose timing was never measured may have its timestamps
-    # written from declared_fps. On a measured file that field can be the header
-    # lie the remux exists to correct, and writing it in would make the lie the
+    # Only a source carrying no timestamps at all may have them written from a
+    # declared rate. On a measured file that field can be the header lie the
+    # remux exists to correct, and on a source whose timing was invented it is
+    # the demultiplexer's own default -- writing either in would make it the
     # file's truth.
-    timestamp_fps = 0.0 if facts.timing_measured else facts.declared_fps
+    timestamp_fps = facts.declared_fps if facts.timing_source == "absent" else 0.0
     if operation is Operation.REENCODE_AV1:
         argv = _reencode_argv(
             source, destination, facts, encoding, allow_hardware=allow_hardware

@@ -10,6 +10,8 @@ from .ffprobe import (
     prober_version,
     read_header,
     scan_packets,
+    timing_source_for,
+    timing_supplied_by_source,
 )
 from .gop import measure_gop
 from .identity import IDENTITY_SCHEME, mint_identity
@@ -71,7 +73,6 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
         frame_count = len(packets)
         constant_frame_rate = False
         max_instantaneous_fps: float | None = None
-        timing_measured = False
         # No timestamps, so no step between them to measure.
         max_timestamp_gap_frame_periods = 0.0
         # avg_frame_rate here is the raw demuxer's fixed default, read from
@@ -85,11 +86,15 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
         frame_count = timing.frame_count
         constant_frame_rate = timing.constant_frame_rate
         max_instantaneous_fps = timing.max_instantaneous_fps
-        timing_measured = True
         max_timestamp_gap_frame_periods = timing.max_timestamp_gap_frame_periods
         declared_fps = header.declared_fps
 
-    identity = mint_identity(header, packets, timing_measured=timing_measured)
+    timing_source = timing_source_for(source, header.container)
+    identity = mint_identity(
+        header,
+        packets,
+        timing_supplied_by_source=timing_supplied_by_source(timing_source),
+    )
 
     return MediaFacts(
         container=header.container,
@@ -121,7 +126,7 @@ def probe_media(path: Path, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Medi
         leading_non_keyframe_frames=_leading_non_keyframe_frames(packets, source),
         coded_reordering_depth=header.coded_reordering_depth,
         max_timestamp_gap_frame_periods=max_timestamp_gap_frame_periods,
-        timing_measured=timing_measured,
+        timing_source=timing_source,
         video_uuid=identity.video_uuid,
         content_digest=identity.content_digest,
         identity_scheme=IDENTITY_SCHEME,

@@ -30,19 +30,19 @@ def test_probe_media_mints_identity_for_an_untimed_stream(
     clips: dict[str, Path],
 ) -> None:
     # A raw elementary stream carries no timestamps. It still gets both values;
-    # timing_measured records that the uuid's timing half is a placeholder. The
-    # re-mint below checks that the probe actually passed its own computed
-    # timing_measured value through to mint_identity, rather than a hardcoded
-    # one that happens to also be False.
+    # the recorded provenance says the uuid's timing half is a placeholder. The
+    # re-mint below checks that the probe actually passed its own derived answer
+    # through to mint_identity, rather than a hardcoded one that happens to
+    # agree.
     facts = probe_media(clips["raw_h264"])
-    assert facts.timing_measured is False
+    assert facts.timing_source == "absent"
     assert len(facts.content_digest) == 32
     assert len(facts.video_uuid) == 36
     header = read_header(clips["raw_h264"])
     packets, _source = scan_packets(clips["raw_h264"], header.video_position)
     assert (
         facts.video_uuid
-        == mint_identity(header, packets, timing_measured=False).video_uuid
+        == mint_identity(header, packets, timing_supplied_by_source=False).video_uuid
     )
 
 
@@ -101,7 +101,7 @@ def test_a_two_packet_file_mints_both_values(tmp_path: Path) -> None:
         source=["-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=1"],
     )
     facts = probe_media(target)
-    assert facts.timing_measured is True
+    assert facts.timing_source == "presentation"
     assert len(facts.content_digest) == 32
     assert len(facts.video_uuid) == 36
 

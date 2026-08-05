@@ -469,12 +469,12 @@ def test_raw_h264_remuxes_into_measured_timing(
     # acceptance re-probe must then measure real, constant timing.
     source = clips["raw_h264"]
     source_facts = probe_media(source)
-    assert source_facts.timing_measured is False
+    assert source_facts.timing_source == "absent"
     result = transcode(source, tmp_path / "out.mp4", "analysis", ANALYSIS_ENCODING)
     assert result.performed
     assert result.operation is Operation.REMUX_TIMEBASE
     assert result.output_facts is not None
-    assert result.output_facts.timing_measured is True
+    assert result.output_facts.timing_source == "presentation"
     assert result.output_facts.constant_frame_rate is True
     assert result.output_facts.frame_count == source_facts.frame_count
     assert result.output_verdict is not None
@@ -492,7 +492,7 @@ def test_an_untimed_source_cut_mid_stream_re_encodes_and_keeps_every_frame(
     # escalation only ever fired for a timed source, because the count it reads
     # was structurally 0 for every untimed one.
     source_facts = probe_media(raw_starting_on_non_keyframes)
-    assert source_facts.timing_measured is False
+    assert source_facts.timing_source == "absent"
     assert source_facts.leading_non_keyframe_frames == 24
     result = transcode(
         raw_starting_on_non_keyframes,

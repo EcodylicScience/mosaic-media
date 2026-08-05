@@ -33,7 +33,7 @@ the branch's convergence against the spec over the other nine tasks.
 ## Global constraints
 
 - Python floor is 3.12. Never raise it.
-- Import direction is one-way: never import `mosaic_api` or `mosaic`.
+- Import direction is one-way: this package imports nothing that imports it.
 - Layers: `core` (probe, verdict, ffmpeg command construction) is standard library
   only; `[io]` may add numpy and `av`; `[cli]` may add typer. Only
   `mosaic_media.cli` imports typer; only `[io]` modules import numpy or `av`.
@@ -165,7 +165,7 @@ Leave every `raise TranscodeError(...)` site untouched.
 
 In `src/mosaic_media/transcode/__init__.py`, change the `TranscodeError` import to
 come from `.errors` rather than `.convert`. Leave the `__all__` entry as it is:
-consumers import from the package and must see no change.
+the package export is the path callers reach, and it must not move.
 
 - [ ] **Step 6: Run the test and the transcode suite**
 
@@ -495,12 +495,11 @@ this repository outside the probe itself. Add `coded_reordering_depth=0` to it.
 `tests.probe.test_verdict` and says in a comment why -- but that comment names
 the baseline's field count, so update the number there.
 
-The backend also constructs `MediaFacts`, in its row-to-facts conversion, and is
-broken by this new required field from here until its own migration lands --
-which Task 10 records but does not perform, because that migration is run by an
-operator against a live database. So the window does not close within this branch,
-and a reader checking the backend after Task 10 should expect it still open. That
-is safe: the checkouts are separate and nothing in this repository imports it.
+A required field with no default breaks any code that constructs `MediaFacts`
+without it, including outside this repository, and stays broken until that code
+is updated. Nothing here imports such code and nothing here can fix it, so the
+window does not close within this branch. Task 10 records the change where the
+record belongs.
 
 - [ ] **Step 7: Run the probe and transcode suites**
 
@@ -1805,99 +1804,30 @@ behavior the test was measuring."
 
 ---
 
-### Task 10: Record the schema change for the backend
+### Task 10: Record the schema change where facts are persisted
 
-The backend's fact persistence is its own schema, needing a migration an operator
-runs against a live database, which is why it is not done here. It already has a
-tracked issue for exactly this shape --
-`docs/issues/media-facts-gains-delivery-counts-and-timestamp-spacing.md` in that
-repository, covering three fields the preceding work package added. This package's
-fields land in the same migration and touch the same sites, so they belong in that
-issue as an appended section rather than in a second document.
+`MediaFacts` gained `timing_source` and `coded_reordering_depth` and lost
+`timing_measured`. Any store that holds these fields column by column needs a
+migration, which is run against a live database rather than from here, so this
+task records the change rather than performing it.
 
-Measured, so the section states facts rather than predictions:
+An untracked side note at `side-notes/schema-change-record.md` carries the
+specifics: which record receives the section, what the section states, and the
+verified facts behind it. It is untracked deliberately -- this repository's
+documents describe this package, and where a record of the change belongs is not
+this package's subject.
 
-- `timing_measured` has nine source sites there: the `mediafacts` model, the
-  nullable staging column on `uploadsessionfile`, `FACT_FIELDS`, the `FactRow`
-  protocol, `facts_to_columns`, three lines of `columns_to_facts`, and the adopt
-  clone. That is the same shape the issue already describes for `max_gop_bytes`,
-  which it names as the site-finding anchor.
-- **No consumer branches on an individual verdict reason.** The response schemas
-  type them as `list[StreamReason]` and `list[AnalysisReason]`, imported from
-  this package, and sort them through without a per-reason case; the sequence
-  import metadata types them as plain string lists. A new reason literal is
-  therefore additive, and the reordering issue's requirement that consumers handle
-  it rather than fall through is met with no change.
-- The analysis toolkit is a no-op. It never names `timing_measured`, and it
-  reconstructs facts through `row_to_facts`, already converting a stale row's
-  `TypeError` into an error naming the remedy: re-probe the media index. A removed
-  or added field surfaces there as that message, which is the designed behavior
-  for exactly this case.
+- [ ] **Step 1: Read the side note**
 
-**Files:**
-- Modify: `/home/paul/ecodylic/mosaic_api/docs/issues/media-facts-gains-delivery-counts-and-timestamp-spacing.md`
-- Modify: that repository's `docs/issues/_INDEX.md` row for it
+Read `side-notes/schema-change-record.md` in full before doing anything. It is
+the whole instruction for this task.
 
-**Interfaces:**
-- Consumes: the final field set from Tasks 3, 4 and 6. Run this task last, so the section describes what landed rather than what was planned.
-- Produces: nothing this repository depends on.
+- [ ] **Step 2: Append the section and update the index row**
 
-- [ ] **Step 1: Read the existing issue in full**
+As the side note specifies. Do not change code anywhere; this task edits two
+documents.
 
-Read
-`/home/paul/ecodylic/mosaic_api/docs/issues/media-facts-gains-delivery-counts-and-timestamp-spacing.md`.
-Run git in that repository as
-`git -C /home/paul/ecodylic/mosaic_api <command>`, never by changing directory.
-Note that it is on `main` there, one commit ahead of its own remote and unpushed.
-
-- [ ] **Step 2: Append a section for this package's fields**
-
-Add a section covering: `timing_measured` leaving the field list and
-`timing_source` and `coded_reordering_depth` joining it; the `mediafacts` column
-types (a short string for the provenance, a NOT NULL integer for the depth) and
-their nullable counterparts on `uploadsessionfile`; and that the adopt clone
-copies both.
-
-State the backfill position, which is the same one the existing document takes
-and reaches the same conclusion for a different reason. The boolean does not map
-to the literal: true covers `presentation`, `decode` and `synthesized`, and the
-new verdict reason turns on telling the first two apart, so any fill produces a
-wrong verdict for some rows rather than an incomplete one. The depth admits no
-backfill either, since zero is a legitimate measurement meaning the bitstream
-reorders nothing. As with the three fields already described, the revision
-refuses a populated table rather than backfilling.
-
-Record what does **not** change, since the existing document's Scope section is
-organized that way: no wire schema field, because reasons are typed lists sorted
-through rather than enumerated; no `videosequence` column, by the rule already
-written beside those columns; and no identity remapping, because the hashed bytes
-are unchanged for every format except the two whose provenance moved, and no row
-holds one of those.
-
-- [ ] **Step 3: Note the identity consequence explicitly**
-
-The provenance boolean is hashed into `video_uuid`, so a file whose
-classification changed re-mints. That is exactly two formats, and no stored row
-holds either, so no identity in any corpus moves. Say so in the section rather
-than leaving a reader to work out whether a re-probe changes a key: the existing
-document already promises that a file probed before and re-probed after is
-indistinguishable in the store, and that promise still holds.
-
-- [ ] **Step 4: Update the issue's index row**
-
-The row's one-line description covers three fields. Extend it to cover the full
-set, keeping the status `active`.
-
-- [ ] **Step 5: Commit in that repository**
-
-Commit on `main` there, alongside the existing unpushed commit. Do not push.
-
-```bash
-git -C /home/paul/ecodylic/mosaic_api add docs/issues/media-facts-gains-delivery-counts-and-timestamp-spacing.md docs/issues/_INDEX.md
-git -C /home/paul/ecodylic/mosaic_api commit -m "Record the provenance and reordering fields in the media facts migration"
-```
-
----
+- [ ] **Step 3: Commit where the side note says, and do not push**
 
 ## Definition of done
 

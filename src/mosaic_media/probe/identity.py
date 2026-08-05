@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .facts import MediaFacts
-from .ffprobe import Header, Packet
+from .ffprobe import Header, Packet, timing_supplied_by_source
 
 # The declared identity scheme, carried in both format tags. One number for
 # both: video_uuid hashes the content digest, so a change to what
@@ -124,13 +124,18 @@ def content_digest_input(header: Header, packets: tuple[Packet, ...]) -> bytes:
 
 
 def video_uuid_input(
-    content_bytes: bytes, timing_measured: bool, packets: tuple[Packet, ...]
+    content_bytes: bytes, timing_supplied_by_source: bool, packets: tuple[Packet, ...]
 ) -> bytes:
-    """The exact bytes hashed into `video_uuid`."""
+    """The exact bytes hashed into `video_uuid`.
+
+    The timing element is whether the file supplied the timing, and it stays a
+    boolean rather than the four-valued fact so a file whose classification did
+    not change keeps its identity.
+    """
     parts = [
         _encode_bytes(VIDEO_FORMAT_TAG),
         _encode_bytes(content_bytes),
-        _encode_boolean(timing_measured),
+        _encode_boolean(timing_supplied_by_source),
         _encode_integer(len(packets)),
     ]
     for packet in packets:
@@ -164,7 +169,7 @@ class Identity:
 
 
 def mint_identity(
-    header: Header, packets: tuple[Packet, ...], *, timing_measured: bool
+    header: Header, packets: tuple[Packet, ...], *, timing_supplied_by_source: bool
 ) -> Identity:
     """Mint both values from one scan's header and packets.
 
@@ -173,7 +178,9 @@ def mint_identity(
     and the packets together before it assembles the facts.
     """
     content_bytes = _digest(content_digest_input(header, packets))
-    video_bytes = _digest(video_uuid_input(content_bytes, timing_measured, packets))
+    video_bytes = _digest(
+        video_uuid_input(content_bytes, timing_supplied_by_source, packets)
+    )
     return Identity(
         video_uuid=_as_uuid_version_eight(video_bytes),
         content_digest=content_bytes.hex(),
@@ -246,10 +253,12 @@ def compare_for_duplicate(
         # Not defensive: without this the function reports false duplicates.
         # An absent digest is the empty string, so two facts that both lack one
         # compare EQUAL below, clear the timing guard whenever both were built
-        # with timing_measured=True, and reach the tolerance comparison -- where
+        # with timing the file supplied, and reach the tolerance comparison -- where
         # two unrelated recordings at the same rate and length come back
-        # "duplicate". Facts persisted before these fields existed have that
-        # shape, and so do facts hand-built for a source the probe never saw.
+        # "duplicate". The probe never mints facts without a digest --
+        # `content_digest` is always a hex digest of a real scan -- so this shape
+        # reaches the function only from a caller that built them by hand, for a
+        # source the probe never saw.
         #
         # "unminted" rather than "distinct": the two may well be the same, and
         # the caller is told which input to fix rather than given an answer the
@@ -269,18 +278,25 @@ def compare_for_duplicate(
             fps_tolerance=None,
             duration_tolerance=None,
         )
-    if not (left.timing_measured and right.timing_measured) or left.duration <= 0.0:
-        # A guard, not a comparison. Both floats are 0.0 placeholders on an
-        # untimed stream, so the tolerance test is meaningless and the division
-        # by duration below is undefined.
+    if (
+        not (
+            timing_supplied_by_source(left.timing_source)
+            and timing_supplied_by_source(right.timing_source)
+        )
+        or left.duration <= 0.0
+    ):
+        # A guard, not a comparison. Both floats are 0.0 placeholders on a stream
+        # with no timestamps, and arithmetic on an invention where a
+        # demultiplexer supplied them, so the tolerance test is meaningless and
+        # the division by duration below is undefined.
         #
         # The duration clause guards that division directly rather than trusting
-        # the flag to imply it. The two come apart on facts a consumer builds
-        # rather than probes: `timing_measured` defaults to True, so a row
-        # reconstructed from persisted columns that predate the field reports
-        # True whatever was actually probed. This function is exported as the
-        # only supported way to ask, so it stays total over every `MediaFacts` a
-        # caller can construct.
+        # the provenance to imply it. `timing_source` is a required `Literal`
+        # with no default, so facts that state a provenance always state a
+        # measured one and none can claim it by omission. The clause remains
+        # because this function is exported as the only supported way to ask,
+        # and stays total over every `MediaFacts` a caller can construct --
+        # including one built by hand with a zero duration.
         return DuplicateComparison(
             verdict="timing_unknown",
             fps_delta=None,

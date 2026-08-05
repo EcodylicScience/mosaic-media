@@ -3,6 +3,7 @@ from dataclasses import replace
 import pytest
 
 from mosaic_media.probe.facts import MediaFacts
+from mosaic_media.probe.ffprobe import TimingSource
 from mosaic_media.probe.identity import IDENTITY_SCHEME
 from mosaic_media.probe.policy import CHROME_149, DEFAULT_THRESHOLDS
 from mosaic_media.probe.verdict import Verdict, derive
@@ -37,7 +38,7 @@ CLEAN = MediaFacts(
     leading_non_keyframe_frames=0,
     coded_reordering_depth=0,
     max_timestamp_gap_frame_periods=1.0,
-    timing_measured=True,
+    timing_source="presentation",
     video_uuid="6ba7b810-9dad-81d1-80b4-00c04fd430c8",
     content_digest="0123456789abcdef0123456789abcdef",
     identity_scheme=IDENTITY_SCHEME,
@@ -175,6 +176,29 @@ def test_a_vp8_style_dedup_gap_is_reported_as_unreliable_metadata() -> None:
     result = verdict_for(frame_count=9070, declared_frame_count=9603)
     assert "unreliable_timing_metadata" in result.analysis_reasons
     assert result.playable
+
+
+def test_a_source_whose_timing_was_invented_is_not_analysis_clean() -> None:
+    # The demultiplexer manufactured these timestamps, so every value measured
+    # from them describes the invention. Reporting the file analysis-ready is how
+    # a file the reader refuses gets called clean.
+    facts = replace(CLEAN, timing_source="synthesized")
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    assert "unreliable_timing_metadata" in verdict.analysis_reasons
+    assert verdict.analysis_transcode == "required"
+
+
+@pytest.mark.parametrize("timing_source", ["absent", "synthesized"])
+def test_an_unsupplied_rate_never_fires_the_variable_rate_reason(
+    timing_source: TimingSource,
+) -> None:
+    # constant_frame_rate is a placeholder on such a source, never a measurement.
+    # Firing variable_frame_rate on it would select a re-encode where a
+    # timestamp-generating remux is the fix.
+    facts = replace(CLEAN, timing_source=timing_source, constant_frame_rate=False)
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+    assert "variable_frame_rate" not in verdict.analysis_reasons
+    assert "variable_frame_rate" not in verdict.stream_reasons
 
 
 def test_a_truncated_file_is_flagged_and_is_not_a_metadata_problem() -> None:
