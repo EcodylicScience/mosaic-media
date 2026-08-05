@@ -58,18 +58,18 @@ GOLDEN_PACKETS = (
 )
 
 GOLDEN_LENGTH = 161
-GOLDEN_SHA256 = "e49aee70c07f43349b8852ceb5b1c401c1da1b078982df43c65f1a98cce5d2af"
+GOLDEN_SHA256 = "54809a4354cd40fc15c3cfa3832062f9622b2849cd6cde0ea3d780efea5db799"
 
 GOLDEN_VIDEO_CONTENT_BYTES = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
 GOLDEN_VIDEO_LENGTH = 69
-GOLDEN_VIDEO_SHA256 = "c3b076782663a6d010a3872a3a2aebdcae6391e28bbd9942c3849c567438afb7"
+GOLDEN_VIDEO_SHA256 = "3f090225a940c8d4e9c00b34aaa7c73201edabbdf21f46e929c6d8446ed850e8"
 
 
 def test_both_format_tags_are_built_from_one_scheme_version() -> None:
     assert CONTENT_FORMAT_TAG.endswith(IDENTITY_SCHEME.encode())
     assert VIDEO_FORMAT_TAG.endswith(IDENTITY_SCHEME.encode())
-    assert CONTENT_FORMAT_TAG == b"mosaic-media/content/1"
-    assert VIDEO_FORMAT_TAG == b"mosaic-media/video/1"
+    assert CONTENT_FORMAT_TAG == b"mosaic-media/content/2"
+    assert VIDEO_FORMAT_TAG == b"mosaic-media/video/2"
 
 
 def identity_of(path: Path) -> Identity:

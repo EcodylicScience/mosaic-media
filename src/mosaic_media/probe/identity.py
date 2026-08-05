@@ -49,7 +49,14 @@ from .ffprobe import Header, Packet, timing_supplied_by_source
 # upgrade that alters libavformat's demuxer output forces one without changing
 # this package's behavior at all. A bump is always a minor version bump of this
 # package (a major one after 1.0); the reverse does not hold.
-IDENTITY_SCHEME = "1"
+#
+# Moved to "2" when the timing element hashed into video_uuid changed meaning:
+# it had been whether the packets carried timestamps, and became whether the
+# file supplied its own timing, which differs for the formats whose
+# demultiplexer manufactures them. Declining the bump would have left those
+# values changing with nothing on the row saying why, which is the outcome the
+# paragraph above rules out.
+IDENTITY_SCHEME = "2"
 
 CONTENT_FORMAT_TAG = f"mosaic-media/content/{IDENTITY_SCHEME}".encode()
 VIDEO_FORMAT_TAG = f"mosaic-media/video/{IDENTITY_SCHEME}".encode()

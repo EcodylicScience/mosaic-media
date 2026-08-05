@@ -329,7 +329,7 @@ future re-mint detectable rather than silent.
 
 Semantic versioning, with the pre-1.0 convention that a minor bump is a breaking
 change and a patch bump is compatible. Pin a range
-(`mosaic-media>=0.2.0,<0.3.0`); a bare floor would not exclude the next breaking
+(`mosaic-media>=0.3.0,<0.4.0`); a bare floor would not exclude the next breaking
 release. Release notes are on the repository's releases page.
 
 `IDENTITY_SCHEME` is a second, independent number. It moves only when the bytes
