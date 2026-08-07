@@ -5,6 +5,13 @@ from pathlib import Path
 
 VIDEO_EXTENSIONS: frozenset[str] = frozenset(
     {
+        # A suffix's presence in a demuxer's registered extension list does not
+        # decide membership here, in either direction. The ogg demuxer
+        # registers only "ogg", yet .ogv is a candidate; .mts, .m2ts, .mpg,
+        # .mpeg and .wmv are candidates whose demuxers register no extension at
+        # all. What decides membership is whether a file of that format has
+        # been handed to this package and measured end to end; a format's
+        # alternate spellings enter together.
         ".mp4",
         ".m4v",
         ".mov",
@@ -30,6 +37,13 @@ VIDEO_EXTENSIONS: frozenset[str] = frozenset(
         ".hevc",
         ".h265",
         ".265",
+        # Ogg: only .ogv is a candidate. The family the muxers name on this
+        # build is .ogv (Ogg Video, video/ogg, theora + vorbis), .ogg (Ogg,
+        # application/ogg, carrying either kind but audio by convention since
+        # 2007), and .oga, .spx and .opus, all audio/ogg with no default video
+        # codec. There is no ogx muxer, so .ogx is invisible to this
+        # classification and stays out.
+        ".ogv",
     }
 )
 

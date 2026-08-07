@@ -34,6 +34,15 @@ def test_raw_elementary_stream_suffixes_match_case_insensitively() -> None:
     assert is_candidate_video(Path("recording.AVC"))
 
 
+def test_ogv_is_a_candidate() -> None:
+    assert is_candidate_video(Path("clip.ogv"))
+
+
+def test_the_other_ogg_spellings_are_not_candidates() -> None:
+    for suffix in (".ogg", ".oga", ".spx", ".opus"):
+        assert not is_candidate_video(Path(f"clip{suffix}")), suffix
+
+
 def test_every_exported_extension_is_reachable_through_the_predicate() -> None:
     # The set is exported and the predicate is the only way to consult it, so
     # the two must agree on every member. They can disagree silently: the
