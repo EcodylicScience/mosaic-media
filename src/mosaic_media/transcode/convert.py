@@ -181,11 +181,21 @@ def _drain_stdout(stream: IO[str], sink: "queue.Queue[str | None]") -> None:
     """Feed ffmpeg's progress lines to `sink`, then a None end marker at EOF.
 
     Reading on a thread lets the run loop keep re-checking the timeout deadline
-    and the cancel token even while no progress line is arriving.
+    and the cancel token even while no progress line is arriving. The stream is
+    closed here rather than by the run loop, because this is the thread reading
+    it: a close from anywhere else can land on an in-flight read, where it blocks
+    on the buffer lock the reader holds.
+
+    The end marker is posted even when the read fails, because it is what stops
+    the run loop waiting. A read that dies without one leaves the loop polling
+    until the transcode deadline expires, which defaults to an hour.
     """
-    for line in stream:
-        sink.put(line)
-    sink.put(None)
+    try:
+        with stream:
+            for line in stream:
+                sink.put(line)
+    finally:
+        sink.put(None)
 
 
 def _run_ffmpeg(
@@ -221,22 +231,28 @@ def _run_ffmpeg(
             message = not_found_message(binary, exc)
             raise TranscodeError(message) from exc
         assert process.stdout is not None
-        lines: queue.Queue[str | None] = queue.Queue()
-        reader = threading.Thread(
-            target=_drain_stdout, args=(process.stdout, lines), daemon=True
-        )
-        reader.start()
-        deadline = time.monotonic() + timeout
-        block: dict[str, str] = {}
+        stdout = process.stdout
+        reader: threading.Thread | None = None
         try:
+            deadline = time.monotonic() + timeout
+            block: dict[str, str] = {}
+            lines: queue.Queue[str | None] = queue.Queue()
+            drain = threading.Thread(
+                target=_drain_stdout, args=(stdout, lines), daemon=True
+            )
+            drain.start()
+            # Bound only once the drain is running. Starting a thread can fail
+            # outright -- a process limit in the minimal container this runner is
+            # built to start in is enough -- and a thread that never started
+            # neither closes the stream nor can be joined, so the cleanup below
+            # has to tell that case apart from a running drain.
+            reader = drain
             while True:
                 if cancel_check is not None and cancel_check():
-                    _terminate(process)
                     message = f"transcode of {source} was canceled"
                     raise TranscodeError(message)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    _terminate(process)
                     message = timed_out_message(binary, action, timeout=timeout)
                     raise TranscodeError(message)
                 try:
@@ -257,19 +273,34 @@ def _run_ffmpeg(
                 block = {}
                 if value == "end":
                     break
+            remaining = deadline - time.monotonic()
+            try:
+                returncode = process.wait(timeout=max(remaining, 0.0))
+            except subprocess.TimeoutExpired:
+                message = timed_out_message(binary, action, timeout=timeout)
+                raise TranscodeError(message)
+            if returncode != 0:
+                _ = stderr_file.seek(0)
+                message = failed_message(binary, action, stderr_file.read())
+                raise TranscodeError(message)
         finally:
-            reader.join(timeout=_TERMINATE_GRACE_SECONDS)
-        remaining = deadline - time.monotonic()
-        try:
-            returncode = process.wait(timeout=max(remaining, 0.0))
-        except subprocess.TimeoutExpired:
-            _terminate(process)
-            message = timed_out_message(binary, action, timeout=timeout)
-            raise TranscodeError(message)
-        if returncode != 0:
-            _ = stderr_file.seek(0)
-            message = failed_message(binary, action, stderr_file.read())
-            raise TranscodeError(message)
+            # The runner owns the child and the pipe, and releases both on the
+            # way out. The order is forced: the child has to be gone before the
+            # drain is waited on, because only its exit closes the pipe's write
+            # end and lets the drain reach EOF and release the read end. Waiting
+            # on a process does not close the pipe it was handed, so a runner
+            # that merely waits leaves a descriptor to the garbage collector.
+            # Stopping the child belongs here rather than at each raise, because
+            # the paths that need it most are the ones the runner does not write:
+            # a caller's on_progress or cancel_check that raises leaves the
+            # encode running with no handle left to stop it, while the partial
+            # output is unlinked out from under it.
+            if process.poll() is None:
+                _terminate(process)
+            if reader is None:
+                stdout.close()
+            else:
+                reader.join(timeout=_TERMINATE_GRACE_SECONDS)
 
 
 def _resolve_output(source: Path, output: Path) -> Path:

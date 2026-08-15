@@ -1,7 +1,13 @@
 """Converter acceptance: the transcoded output re-probes clean on both verdicts."""
 
+import gc
+import queue
 import subprocess
+import warnings
+from collections.abc import Callable, Iterable
 from pathlib import Path
+from types import SimpleNamespace
+from typing import IO
 
 import numpy
 import pytest
@@ -130,6 +136,29 @@ def _warnings_of(argv: tuple[str, ...]) -> str:
     replaced[replaced.index("-v") + 1] = "warning"
     completed = subprocess.run(replaced, capture_output=True, text=True, check=True)
     return completed.stderr
+
+
+def _resource_warnings(action: Callable[[], None]) -> list[str]:
+    """Run `action` and return every ResourceWarning Python raised during it.
+
+    A collection is forced inside the recording window so a resource released
+    only by its finalizer is reported here rather than at some later point in the
+    session, where it would be attributed to whatever ran next. One runs before
+    the window too, so that same collection cannot sweep up an earlier test's
+    garbage and report it against this one. The resources these tests watch are
+    released by refcounting as the frames holding them go away; the collection is
+    a backstop for the reference cycles a raised exception leaves behind.
+    """
+    _ = gc.collect()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        action()
+        _ = gc.collect()
+    return [
+        str(entry.message)
+        for entry in caught
+        if issubclass(entry.category, ResourceWarning)
+    ]
 
 
 def _analysis_command(source: Path, destination: Path) -> TranscodeCommand:
@@ -808,6 +837,195 @@ def test_a_canceled_transcode_raises_and_leaves_no_output(
             cancel_check=canceler.cancel_check,
         )
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_transcode_leaves_no_resource_unreleased(
+    clips: dict[str, Path], tmp_path: Path
+) -> None:
+    # The completion path. The runner owns two child resources, the ffmpeg
+    # process and the read end of its progress pipe, and releases both before it
+    # returns. The performed assertion keeps the test from going vacuous if this
+    # source and target ever stop needing a transcode: the no-op branch returns
+    # without starting ffmpeg at all, and would leave nothing to release.
+    source = clips["cfr_mp4"]
+
+    def run() -> None:
+        result = transcode(source, tmp_path / "out.mp4", "playback", PLAYBACK_ENCODING)
+        assert result.performed
+
+    assert _resource_warnings(run) == []
+
+
+class _ProgressFailure(Exception):
+    """Raised by a progress callback to leave the run mid-encode."""
+
+
+@requires_svtav1
+def test_a_raising_progress_callback_leaves_no_child_running(
+    slow_reencode_source: Path, tmp_path: Path
+) -> None:
+    # The path out through the caller's own code, which leaves the runner through
+    # neither completion nor cancellation. Nothing but the runner holds the child
+    # there: the caller has no handle to stop it, and the partial output is
+    # unlinked out from under it on the way back up.
+    facts = probe_media(slow_reencode_source)
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+
+    updates: list[TranscodeProgress] = []
+
+    def fail(update: TranscodeProgress) -> None:
+        # Only once a second block has arrived. ffmpeg emits a last block as it
+        # finishes, and raising on that one would leave the child already exiting
+        # -- the completion path again, under a name claiming otherwise. A second
+        # block is what proves the first was not the last. Counting blocks rather
+        # than reading the fraction keeps this off the encoder's lookahead, which
+        # holds out_time, and with it the fraction, at None for most of the run.
+        updates.append(update)
+        if len(updates) == 2:
+            raise _ProgressFailure
+
+    def run() -> None:
+        with pytest.raises(_ProgressFailure):
+            _ = run_transcode(
+                slow_reencode_source,
+                tmp_path / "out.mp4",
+                "analysis",
+                facts,
+                verdict,
+                profile=CHROME_149,
+                thresholds=DEFAULT_THRESHOLDS,
+                encoding=ANALYSIS_ENCODING,
+                on_progress=fail,
+            )
+
+    assert _resource_warnings(run) == []
+
+
+@requires_svtav1
+def test_a_deadline_expiring_during_the_encode_leaves_no_child_running(
+    slow_reencode_source: Path, tmp_path: Path
+) -> None:
+    # The deadline reached while the run loop is still reading progress. The
+    # limit is short enough to expire well inside an encode that takes seconds.
+    facts = probe_media(slow_reencode_source)
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+
+    def run() -> None:
+        with pytest.raises(TranscodeError, match="timed out"):
+            _ = run_transcode(
+                slow_reencode_source,
+                tmp_path / "out.mp4",
+                "analysis",
+                facts,
+                verdict,
+                profile=CHROME_149,
+                thresholds=DEFAULT_THRESHOLDS,
+                encoding=ANALYSIS_ENCODING,
+                timeout=0.2,
+            )
+
+    assert _resource_warnings(run) == []
+
+
+@requires_svtav1
+def test_a_deadline_expiring_after_the_progress_stream_leaves_no_child_running(
+    slow_reencode_source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The other way the deadline is reached: the progress stream ends first, and
+    # the wait on the child runs out instead of the run loop. ffmpeg enters that
+    # state by itself, reporting `progress=end` before it writes the mp4 trailer
+    # and exits, but only for as long as the trailer takes -- too short a window
+    # to time out against on purpose. A drain that reports end of file at once
+    # puts the loop there on demand. It closes the stream because it stands in
+    # for the real drain, which owns it; what this pins is the child, reaped on
+    # an exit path the run loop itself never takes.
+    #
+    # That the child survives its progress pipe closing is ffmpeg's behavior, not
+    # this package's: it ignores SIGPIPE and treats the progress stream as
+    # auxiliary, where the default disposition subprocess restores in a child
+    # would kill it. An ffmpeg that stopped doing so would fail this test with a
+    # transcode failure rather than a timeout, which is ffmpeg news, not converter
+    # news.
+    def end_at_once(stream: IO[str], sink: "queue.Queue[str | None]") -> None:
+        stream.close()
+        sink.put(None)
+
+    monkeypatch.setattr(convert_module, "_drain_stdout", end_at_once)
+    facts = probe_media(slow_reencode_source)
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+
+    def run() -> None:
+        with pytest.raises(TranscodeError, match="timed out"):
+            _ = run_transcode(
+                slow_reencode_source,
+                tmp_path / "out.mp4",
+                "analysis",
+                facts,
+                verdict,
+                profile=CHROME_149,
+                thresholds=DEFAULT_THRESHOLDS,
+                encoding=ANALYSIS_ENCODING,
+                timeout=0.2,
+            )
+
+    assert _resource_warnings(run) == []
+
+
+class _UnstartableThread:
+    """A thread the runtime refuses to start, as a process limit would.
+
+    The constructor mirrors threading.Thread's own parameter names, kinds and
+    defaults, and deletes what it does not read; tests/probe/test_ffprobe.py's
+    module docstring says why.
+    """
+
+    def __init__(
+        self,
+        group: None = None,
+        target: Callable[..., object] | None = None,
+        name: str | None = None,
+        args: Iterable[object] = (),
+        kwargs: dict[str, object] | None = None,
+        *,
+        daemon: bool | None = None,
+    ) -> None:
+        del group, target, name, args, kwargs, daemon
+
+    def start(self) -> None:
+        message = "can't start new thread"
+        raise RuntimeError(message)
+
+
+@requires_svtav1
+def test_a_drain_that_cannot_start_leaves_no_resource_unreleased(
+    slow_reencode_source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The exit path taken before the run loop is ever entered, for the reason the
+    # converter's own cleanup comment gives. Only the name `threading` inside the
+    # converter is replaced, so no other thread in the session is affected. The
+    # raised type is pinned because TranscodeError subclasses RuntimeError: a
+    # change that wrapped the start failure would otherwise keep this green.
+    monkeypatch.setattr(
+        convert_module, "threading", SimpleNamespace(Thread=_UnstartableThread)
+    )
+    facts = probe_media(slow_reencode_source)
+    verdict = derive(facts, CHROME_149, DEFAULT_THRESHOLDS)
+
+    def run() -> None:
+        with pytest.raises(RuntimeError, match="can't start new thread") as failure:
+            _ = run_transcode(
+                slow_reencode_source,
+                tmp_path / "out.mp4",
+                "analysis",
+                facts,
+                verdict,
+                profile=CHROME_149,
+                thresholds=DEFAULT_THRESHOLDS,
+                encoding=ANALYSIS_ENCODING,
+            )
+        assert failure.type is RuntimeError
+
+    assert _resource_warnings(run) == []
 
 
 @requires_svtav1
