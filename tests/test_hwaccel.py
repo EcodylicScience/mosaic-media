@@ -23,6 +23,7 @@ def reset_caches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(hwaccel, "_ffmpeg_ok", None)
     monkeypatch.setattr(hwaccel, "_nvdec_ok", None)
     monkeypatch.setattr(hwaccel, "_encoder_ok", {})
+    monkeypatch.setattr(hwaccel, "_encoder_usable_ok", {})
 
 
 # Stand-ins installed over a real callable mirror that callable's own parameter
@@ -238,3 +239,91 @@ def test_a_subprocess_failure_is_reported_as_unavailable(
     monkeypatch.setattr(subprocess, "run", RaisingRun())
     assert hwaccel.nvdec_available() is False
     assert hwaccel.encoder_available("av1_nvenc") is False
+
+
+# The encode probe opens the encoder itself rather than initializing a CUDA
+# device. A Pascal card initializes CUDA perfectly well and has no AV1 encoder at
+# all, so the device-init form the decode probe uses answers True on exactly the
+# hardware this probe exists to reject. 256x256 clears NVENC's per-codec minimum
+# encode resolution, which AV1's is the largest of.
+_ENCODE_PROBE_COMMAND = [
+    "ffmpeg",
+    "-v",
+    "error",
+    "-f",
+    "lavfi",
+    "-i",
+    "nullsrc=s=256x256:d=0.1",
+    "-frames:v",
+    "1",
+    "-c:v",
+    "av1_nvenc",
+    "-pix_fmt",
+    "yuv420p",
+    "-f",
+    "null",
+    "-",
+]
+
+_LISTS_NVENC = " V..... av1_nvenc x\n V..... libsvtav1 y\n"
+
+
+def test_encoder_usable_when_the_encode_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", present)
+    monkeypatch.setattr(subprocess, "run", FakeRun(_LISTS_NVENC, returncode=0))
+    assert hwaccel.encoder_usable("av1_nvenc") is True
+
+
+def test_encoder_unusable_when_the_encode_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The listed-but-unrunnable case: the build carries the encoder and the
+    device cannot open it, which is what a Pascal card reports for av1_nvenc."""
+    monkeypatch.setattr(shutil, "which", present)
+    monkeypatch.setattr(subprocess, "run", FakeRun(_LISTS_NVENC, returncode=255))
+    assert hwaccel.encoder_available("av1_nvenc") is True
+    assert hwaccel.encoder_usable("av1_nvenc") is False
+
+
+def test_encoder_usable_skips_the_probe_when_the_encoder_is_not_listed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeRun(" V..... libsvtav1 y\n", returncode=0)
+    monkeypatch.setattr(shutil, "which", present)
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert hwaccel.encoder_usable("av1_nvenc") is False
+    assert fake.commands == [["ffmpeg", "-encoders"]]
+
+
+def test_encoder_usable_probe_is_cached_per_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeRun(_LISTS_NVENC, returncode=0)
+    monkeypatch.setattr(shutil, "which", present)
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert hwaccel.encoder_usable("av1_nvenc") is True
+    assert hwaccel.encoder_usable("av1_nvenc") is True
+    assert fake.commands == [["ffmpeg", "-encoders"], _ENCODE_PROBE_COMMAND]
+
+
+def test_encoder_usable_is_false_without_ffmpeg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeRun(_LISTS_NVENC, returncode=0)
+    monkeypatch.setattr(shutil, "which", absent)
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert hwaccel.encoder_usable("av1_nvenc") is False
+    assert fake.commands == []
+
+
+def test_a_timed_out_encode_probe_is_reported_as_unusable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe that cannot answer resolves to the CPU encoder, which is correct
+    output produced slowly rather than a run that fails at encoder startup."""
+    monkeypatch.setattr(shutil, "which", present)
+    monkeypatch.setattr(hwaccel, "_encoder_ok", {"av1_nvenc": True})
+    monkeypatch.setattr(subprocess, "run", RaisingRun())
+    assert hwaccel.encoder_usable("av1_nvenc") is False

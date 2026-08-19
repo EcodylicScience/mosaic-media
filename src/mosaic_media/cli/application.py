@@ -57,6 +57,12 @@ class Profile(str, enum.Enum):
 
 _PROFILES: dict[Profile, PlaybackProfile] = {Profile.chrome_149: CHROME_149}
 
+_ALLOW_HARDWARE_HELP = (
+    "Permit av1_nvenc hardware encoding. Taken only when this machine can "
+    "actually open that encoder: a build listing it on a device that cannot "
+    "run it encodes on the CPU instead. Off by default."
+)
+
 # The verdict is the exit code, so the command works as a shell test without
 # parsing stdout. 1 stays the probe-failure code the other commands use, and 2
 # is skipped because click already exits 2 on a usage error such as a mistyped
@@ -191,11 +197,7 @@ def transcode(
         bool,
         typer.Option(
             "--allow-hardware/--no-hardware",
-            help=(
-                "Permit av1_nvenc hardware encoding; used only when the system "
-                "ffmpeg offers it. Off by default (permitting enables it only when "
-                "detected)."
-            ),
+            help=_ALLOW_HARDWARE_HELP,
         ),
     ] = False,
 ) -> None:
@@ -250,7 +252,14 @@ def transcode(
         )
         typer.echo(note)
     operation_name = "" if result.operation is None else result.operation.value
-    typer.echo(f"wrote {result.output_path} ({operation_name}).")
+    # A copy remux names no encoder, so the detail stays a bare operation there.
+    # On a re-encode the encoder is worth saying: permitting hardware on a machine
+    # whose device cannot open av1_nvenc encodes on the CPU, and a run that took
+    # tens of times longer than expected should not leave the reader guessing.
+    detail = operation_name
+    if result.encoder_name:
+        detail = f"{operation_name}, {result.encoder_name}"
+    typer.echo(f"wrote {result.output_path} ({detail}).")
 
 
 __all__ = ["app", "media_app"]

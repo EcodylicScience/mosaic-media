@@ -47,7 +47,13 @@ from ..probe.policy import PlaybackProfile, Thresholds
 from ..probe.probe import probe_media
 from ..probe.verdict import Verdict, derive
 
-from .commands import EncodingParameters, Operation, Target, build_command
+from .commands import (
+    EncodingParameters,
+    Operation,
+    RecordedEncoder,
+    Target,
+    build_command,
+)
 from .errors import TranscodeError
 
 DEFAULT_TRANSCODE_TIMEOUT_SECONDS = 3600.0
@@ -110,6 +116,10 @@ class TranscodeResult:
     # Populated on the no-op branch too -- it describes the input, not the
     # output, and the input facts are in hand there.
     source_video_uuid: str
+    # The video encoder the run used, empty when nothing was encoded -- a no-op,
+    # or a copy remux. `allow_hardware=True` on a machine whose device cannot open
+    # av1_nvenc falls back to the CPU encoder, and this is what says so.
+    encoder_name: RecordedEncoder = ""
 
 
 def _parse_reading(value: str | None) -> float | None:
@@ -373,6 +383,11 @@ def run_transcode(
     the run; a true result stops the child, cleans up the partial output, and
     raises a `TranscodeError` naming the run canceled. Both default to None, so a
     caller that wants neither -- including the CLI -- is unaffected.
+
+    `TranscodeResult.encoder_name` names the video encoder the run used, empty
+    when nothing was encoded. Permitting hardware does not guarantee it: a machine
+    whose device cannot open `av1_nvenc` encodes on the CPU instead, and that
+    field is the only record of which one ran.
     """
     destination = _resolve_output(source, output)
     command = build_command(
@@ -394,6 +409,7 @@ def run_transcode(
             reasons_addressed=frozenset(),
             residual_recommended=False,
             source_video_uuid=facts.video_uuid,
+            encoder_name="",
         )
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -451,4 +467,5 @@ def run_transcode(
         reasons_addressed=command.reasons,
         residual_recommended=residual_recommended,
         source_video_uuid=facts.video_uuid,
+        encoder_name=command.encoder_name,
     )

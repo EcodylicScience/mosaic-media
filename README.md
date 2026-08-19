@@ -244,9 +244,10 @@ to a re-encode anyway when it would not survive as a copy -- because the output
 container cannot carry the source codec, or because it would carry forward
 packets the source itself does not decode, leaving the derivative missing the
 same frames. Encoding runs on SVT-AV1, or on NVENC when the caller permits
-hardware and ffmpeg lists `av1_nvenc`. A listing proves the encoder was compiled
-in, not that a usable device is present, so permitting hardware on a machine
-without one fails at encoder startup rather than falling back.
+hardware and this machine can open `av1_nvenc`. A listing proves only that the
+encoder was compiled in, so permission is checked against a probe that encodes a
+frame; a build carrying the encoder on a device that cannot run it encodes on the
+CPU instead of failing at encoder startup.
 
 Variable frame rate is the hard measurement. ffprobe and OpenCV both report it
 for containers that merely quantize timestamps to milliseconds, so the probe

@@ -14,12 +14,29 @@ import subprocess
 
 _PROBE_TIMEOUT_SECONDS = 5
 
+# The encode probe allocates an encoder session on the device, paying a cold CUDA
+# context creation the listing probe never touches; a host enumerating several
+# GPUs takes seconds over it. The ceiling is generous because exceeding it reads
+# as unusable and drops a permitted run onto the CPU encoder, and because a
+# transcode that consults this probe then runs for minutes.
+_ENCODE_PROBE_TIMEOUT_SECONDS = 30
+
+# The encode probe's frame size. NVENC declares a minimum encode resolution per
+# codec and AV1's is the largest of the family, so a frame sized for the decode
+# probe is refused by a device that encodes AV1 perfectly well -- a false
+# negative on exactly the hardware the probe exists to find. 256x256 clears every
+# published minimum and still encodes in a single frame.
+_ENCODE_PROBE_SIZE = "256x256"
+
 _ffmpeg_ok: bool | None = None
 _nvdec_ok: bool | None = None
 _encoder_ok: dict[str, bool] = {}
+_encoder_usable_ok: dict[str, bool] = {}
 
 
-def _probe(command: list[str]) -> "subprocess.CompletedProcess[str] | None":
+def _probe(
+    command: list[str], *, timeout: float = _PROBE_TIMEOUT_SECONDS
+) -> "subprocess.CompletedProcess[str] | None":
     """Run a capability probe, or None when ffmpeg could not be run at all.
 
     A probe answers a yes-or-no question, so every way of failing to run one --
@@ -28,9 +45,7 @@ def _probe(command: list[str]) -> "subprocess.CompletedProcess[str] | None":
     `mosaic_media.ffmpeg`: they have no error to inject and no failure to word.
     """
     try:
-        return subprocess.run(
-            command, capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SECONDS
-        )
+        return subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -111,3 +126,68 @@ def encoder_available(name: str) -> bool:
     available = result is not None and _encoder_listed(name, result.stdout)
     _encoder_ok[name] = available
     return available
+
+
+def encoder_usable(name: str) -> bool:
+    """True when ffmpeg can open `name` on this machine and encode a frame with
+    it. Cached per name.
+
+    The usability companion to `encoder_available`, which answers only whether the
+    build lists the encoder. A listing is a build-time fact: a distribution ffmpeg
+    compiled with NVENC lists `av1_nvenc` on every machine it is installed on,
+    including a GPU generation with no AV1 encoder at all, and there the encoder
+    fails at startup with "No capable devices found" rather than falling back.
+    Encoding one frame is the only reliable check -- the principle
+    `nvdec_available` states for the decode side.
+
+    A separate function rather than a change to `encoder_available`, because the
+    two questions have separate askers: a caller choosing between a hardware and a
+    software encoder needs usability, and a caller asking whether a build carries a
+    CPU encoder at all should not pay a device probe for the answer.
+
+    The encoder is opened the way a transcode opens it -- no `-init_hw_device`,
+    since an NVENC encoder fed frames from system memory creates its own device --
+    so this answers for the invocation the caller will make. Initializing a CUDA
+    device answers a different question and answers it wrongly here: a card whose
+    CUDA runtime is healthy and whose silicon has no AV1 encoder passes that check
+    and fails this one.
+
+    A machine whose encoder sessions are all in use answers False and stays False
+    for the life of the process. That is deliberate: this result selects an
+    argument vector, and a capability that changed midway would emit two different
+    commands within one job.
+    """
+    cached = _encoder_usable_ok.get(name)
+    if cached is not None:
+        return cached
+    if not encoder_available(name):
+        # Not compiled in: there is no encoder to open and no probe to run.
+        _encoder_usable_ok[name] = False
+        return False
+    result = _probe(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"nullsrc=s={_ENCODE_PROBE_SIZE}:d=0.1",
+            "-frames:v",
+            "1",
+            # Naming the encoder is load-bearing: the null muxer's default video
+            # codec is wrapped_avframe, so without it the command exits zero
+            # having opened no encoder at all.
+            "-c:v",
+            name,
+            "-pix_fmt",
+            "yuv420p",
+            "-f",
+            "null",
+            "-",
+        ],
+        timeout=_ENCODE_PROBE_TIMEOUT_SECONDS,
+    )
+    usable = result is not None and result.returncode == 0
+    _encoder_usable_ok[name] = usable
+    return usable

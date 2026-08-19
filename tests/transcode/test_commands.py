@@ -390,10 +390,26 @@ def test_interlacing_adds_a_deinterlace_filter() -> None:
     assert "yadif" in arg_after(command.argv, "-vf")
 
 
-def test_hardware_selects_nvenc_when_allowed_and_available(
+class CountingUsable:
+    """An `encoder_usable` stand-in recording the names it was asked about.
+
+    Mirrors the real callable's parameter name and kind, per the house rule in
+    tests/probe/test_ffprobe.py.
+    """
+
+    def __init__(self, usable: bool) -> None:
+        self.usable: bool = usable
+        self.names: list[str] = []
+
+    def __call__(self, name: str) -> bool:
+        self.names.append(name)
+        return self.usable
+
+
+def test_hardware_selects_nvenc_when_the_device_can_open_the_encoder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(commands_module.hwaccel, "encoder_available", lambda name: True)
+    monkeypatch.setattr(commands_module.hwaccel, "encoder_usable", lambda name: True)
     command = command_for(
         "playback", PLAYBACK_ENCODING, allow_hardware=True, rotation_degrees=90
     )
@@ -401,16 +417,56 @@ def test_hardware_selects_nvenc_when_allowed_and_available(
     assert "av1_nvenc" in command.argv
     assert "-cq" in command.argv
     assert "libsvtav1" not in command.argv
+    assert command.encoder_name == "av1_nvenc"
+
+
+def test_hardware_falls_back_to_the_cpu_encoder_when_the_device_cannot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Permission plus a listing is not enough. A build that carries av1_nvenc on
+    a device that cannot open it encodes on the CPU, where before it emitted a
+    command that failed at encoder startup having written nothing."""
+    monkeypatch.setattr(commands_module.hwaccel, "encoder_usable", lambda name: False)
+    command = command_for(
+        "playback", PLAYBACK_ENCODING, allow_hardware=True, rotation_degrees=90
+    )
+    assert command is not None
+    assert "libsvtav1" in command.argv
+    assert "-crf" in command.argv
+    assert "av1_nvenc" not in command.argv
+    assert command.encoder_name == "libsvtav1"
 
 
 def test_hardware_is_ignored_when_not_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(commands_module.hwaccel, "encoder_available", lambda name: True)
+    monkeypatch.setattr(commands_module.hwaccel, "encoder_usable", lambda name: True)
     command = command_for(
         "playback", PLAYBACK_ENCODING, allow_hardware=False, rotation_degrees=90
     )
     assert command is not None
     assert "libsvtav1" in command.argv
     assert "av1_nvenc" not in command.argv
+    assert command.encoder_name == "libsvtav1"
+
+
+def test_the_usability_probe_is_not_consulted_without_permission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe spawns an ffmpeg subprocess on a cold cache, so the default path
+    must not pay for it."""
+    counting = CountingUsable(usable=True)
+    monkeypatch.setattr(commands_module.hwaccel, "encoder_usable", counting)
+    command = command_for(
+        "playback", PLAYBACK_ENCODING, allow_hardware=False, rotation_degrees=90
+    )
+    assert command is not None
+    assert counting.names == []
+
+
+def test_a_copy_remux_names_no_encoder() -> None:
+    command = command_for("analysis", ANALYSIS_ENCODING, **TIMESTAMP_LESS)
+    assert command is not None
+    assert command.operation is Operation.REMUX_TIMEBASE
+    assert command.encoder_name == ""
 
 
 def test_analysis_and_playback_targets_are_independent() -> None:

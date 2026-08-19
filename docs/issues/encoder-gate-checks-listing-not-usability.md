@@ -63,3 +63,34 @@ usability probe in `hwaccel.py` (a cached null encode via
 `-init_hw_device cuda`, mirroring the `nvdec_available` fix), gating
 `av1_nvenc` on permission AND that probe with a `libsvtav1` fallback. Scope
 now: `transcode/commands.py` and `hwaccel.py` only.
+
+## Resolution (2026-08-19): transcode half closed
+
+`hwaccel.encoder_usable(name)` opens the named encoder and encodes one frame,
+cached per name beside `encoder_available`'s listing cache. `_selected_encoder`
+in `transcode/commands.py` takes `av1_nvenc` only on permission AND that probe,
+and returns `libsvtav1` otherwise, so a permitted encode on a machine that cannot
+run the hardware encoder produces a file rather than failing at encoder startup.
+`TranscodeCommand.encoder_name` and `TranscodeResult.encoder_name` record which
+encoder ran, empty for a copy remux and for a no-op, because nothing else on the
+result distinguishes a hardware encode from the CPU fallback the same permission
+produces: the operation is `REENCODE_AV1` either way and the output measures as
+`av1`. The CLI names it beside the operation.
+
+Two departures from the plan in the 2026-07-17 update.
+
+The probe does not use `-init_hw_device cuda`. That form answers a different
+question and answers it wrongly for the encode side: the reported host is a pair
+of GTX 1080 Ti, whose CUDA runtime initializes perfectly and whose Pascal silicon
+has no AV1 encoder at all, so a device-init probe returns True on exactly the
+machine the check exists to reject. The failure is NVENC refusing the AV1 GUID
+when the encoder is opened. `_reencode_argv` passes no `-init_hw_device` either,
+so opening the encoder is also what the transcode actually does. The frame is
+256x256 rather than the decode probe's 64x64: NVENC declares a minimum encode
+resolution per codec and AV1's is the largest of the family, so the smaller frame
+would report False on a card that encodes AV1 correctly.
+
+`encoder_available`'s signature is unchanged and `encoder_usable` was added
+beside it, the sibling option this document offered. Changing the first in place
+would have run a device probe for `libsvtav1` during test collection, where
+`requires_svtav1` calls it to decide whether the AV1 acceptance suite can run.

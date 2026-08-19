@@ -305,6 +305,30 @@ def test_a_clean_analysis_source_is_a_no_op(
     assert not destination.exists()
 
 
+def test_a_no_op_names_no_encoder(clips: dict[str, Path], tmp_path: Path) -> None:
+    result = transcode(
+        clips["faststart_mp4"], tmp_path / "out.mp4", "analysis", ANALYSIS_ENCODING
+    )
+    assert result.performed is False
+    assert result.encoder_name == ""
+
+
+@requires_svtav1
+def test_the_result_names_the_encoder_the_run_used(
+    variable_frame_rate_mp4: Path, tmp_path: Path
+) -> None:
+    """A re-encode records which encoder ran, so a caller can tell a hardware
+    encode from the CPU fallback the same permission produces on a machine whose
+    device cannot open av1_nvenc. Nothing else on the result distinguishes them:
+    the operation is REENCODE_AV1 either way, and the output measures as av1."""
+    result = transcode(
+        variable_frame_rate_mp4, tmp_path / "out.mp4", "analysis", ANALYSIS_ENCODING
+    )
+    assert result.performed
+    assert result.operation is Operation.REENCODE_AV1
+    assert result.encoder_name == "libsvtav1"
+
+
 def test_the_no_op_branch_records_the_source_video_uuid(
     clips: dict[str, Path], tmp_path: Path
 ) -> None:

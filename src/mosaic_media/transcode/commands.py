@@ -1,8 +1,8 @@
 """Verdict to ffmpeg argv. Pure construction, no I/O.
 
-Exception: when the caller passes `allow_hardware=True`, the encoder-argument
-selection consults `hwaccel.encoder_available`, a cached ffmpeg capability
-probe that spawns a subprocess on a cold cache.
+Exception: when the caller passes `allow_hardware=True`, the encoder selection
+consults `hwaccel.encoder_usable`, a cached ffmpeg capability probe that spawns a
+subprocess encoding one frame on a cold cache.
 
 The command selects the minimum operation that clears a target's reasons, never a
 blanket re-encode. A header that lies about timing needs a `-c copy` remux that
@@ -36,6 +36,11 @@ from ..probe.verdict import Verdict
 from .errors import TranscodeError
 
 Target = Literal["analysis", "playback"]
+
+# The two encoders a re-encode can run on. `RecordedEncoder` adds the empty
+# string a copy remux carries, having encoded nothing.
+EncoderName = Literal["av1_nvenc", "libsvtav1"]
+RecordedEncoder = EncoderName | Literal[""]
 
 _BASE: tuple[str, ...] = ("ffmpeg", "-hide_banner", "-v", "error", "-y")
 
@@ -186,6 +191,13 @@ class TranscodeCommand:
     target: Target
     reasons: frozenset[str]
     output_path: Path
+    # The video encoder this command runs on, empty for a copy remux, which
+    # encodes nothing. Named here because argv is otherwise the only record, and
+    # a caller reading it back would be re-deriving a choice this module already
+    # made: a re-encode that ran on the CPU because the permitted device could
+    # not open the hardware encoder is otherwise indistinguishable from one never
+    # permitted hardware at all.
+    encoder_name: RecordedEncoder = ""
 
 
 def _target_reasons(verdict: Verdict, target: Target) -> frozenset[str]:
@@ -274,10 +286,26 @@ def _copy_remux_argv(
     )
 
 
+def _selected_encoder(*, allow_hardware: bool) -> EncoderName:
+    """The video encoder a re-encode runs on.
+
+    Hardware is taken only when the caller permits it and this machine can
+    actually open the encoder. Permission alone is not enough, and neither is the
+    build's encoder listing: a distribution ffmpeg lists `av1_nvenc` wherever
+    NVENC was compiled in, including a GPU generation with no AV1 encoder, and
+    selecting it there fails at encoder startup instead of producing a file.
+    Falling back to the CPU encoder is what the permission already sanctions --
+    it permits hardware, it does not require it.
+    """
+    if allow_hardware and hwaccel.encoder_usable("av1_nvenc"):
+        return "av1_nvenc"
+    return "libsvtav1"
+
+
 def _encoder_args(
-    encoding: EncodingParameters, *, allow_hardware: bool
+    encoding: EncodingParameters, encoder: EncoderName
 ) -> tuple[str, ...]:
-    if allow_hardware and hwaccel.encoder_available("av1_nvenc"):
+    if encoder == "av1_nvenc":
         return (
             "-c:v",
             "av1_nvenc",
@@ -315,7 +343,7 @@ def _reencode_argv(
     facts: MediaFacts,
     encoding: EncodingParameters,
     *,
-    allow_hardware: bool,
+    encoder: EncoderName,
 ) -> tuple[str, ...]:
     # The decoder emits frames before the first keyframe only when asked, and the
     # demuxer keeps edit-list packets only when told to ignore the edit list.
@@ -336,7 +364,7 @@ def _reencode_argv(
     fps_value = facts.fps if facts.fps > 0.0 else facts.declared_fps
     if fps_value > 0.0:
         argv.extend(["-r", f"{fps_value:.6f}", "-fps_mode", "cfr"])
-    argv.extend(_encoder_args(encoding, allow_hardware=allow_hardware))
+    argv.extend(_encoder_args(encoding, encoder))
     argv.extend(["-pix_fmt", encoding.pixel_format])
     if encoding.keyframe_interval is not None:
         argv.extend(["-g", str(encoding.keyframe_interval)])
@@ -389,9 +417,11 @@ def build_command(
     # routed to a re-encode because a copy cannot recover its order, and one
     # stating no rate is refused above.
     timestamp_fps = facts.declared_fps if facts.timing_source == "absent" else 0.0
+    encoder_name: RecordedEncoder = ""
     if operation is Operation.REENCODE_AV1:
+        encoder_name = _selected_encoder(allow_hardware=allow_hardware)
         argv = _reencode_argv(
-            source, destination, facts, encoding, allow_hardware=allow_hardware
+            source, destination, facts, encoding, encoder=encoder_name
         )
     elif operation is Operation.REMUX_TIMEBASE:
         argv = _copy_remux_argv(
@@ -413,4 +443,5 @@ def build_command(
         target=target,
         reasons=_target_reasons(verdict, target),
         output_path=destination,
+        encoder_name=encoder_name,
     )
