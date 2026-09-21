@@ -66,9 +66,11 @@ above `IDENTITY_SCHEME` requires the bump and records that a bump re-mints
 `content_digest` along with it, and that a bump is always a minor version bump
 of this package.
 
-The frame-rate estimator work is separate and costs none of that, because no
-identity input hashes `fps`. Splitting them keeps a re-mint out of a change
-that does not need one.
+`dropped-frames-lower-the-fitted-frame-rate.md` is blocked on this issue. A
+period estimated from rounded decimals reads 30.00030000299978 for a file of
+period 1/30, because rounding makes consecutive deltas alternate. Exact
+timestamps make that estimate exact. Neither identity input hashes `fps`, and
+the dependent work therefore leaves identity untouched.
 
 ## What would close it
 
