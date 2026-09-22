@@ -93,6 +93,31 @@ CHROME_149 = PlaybackProfile(
 FRAME_EXACT_CODECS: frozenset[str] = frozenset({"h264", "hevc", "av1", "vp9", "vp8"})
 
 
+# Codecs every libavcodec build can decode in software, whatever it was compiled
+# with and whatever hardware it is running on. Membership is a property of
+# FFmpeg's own source tree, not a measurement of any one machine: a codec
+# qualifies when its *native* decoder -- the one built from libavcodec's own C,
+# with no `--enable-lib*` and no hardware accelerator -- decodes pictures.
+#
+# AV1 is the one modern codec that fails that test, and it fails it completely.
+# `libavcodec/av1dec.c` is a hardware-accelerator wrapper with no software path;
+# it emits "Your platform doesn't support hardware accelerated AV1 decoding" and
+# returns nothing when no accelerator answers. AV1's software decoders,
+# `libdav1d` and `libaom-av1`, are external libraries a build may omit -- and
+# the manylinux `opencv-python` wheel does omit them, linking only libvpx and
+# compiling in no hwaccel at all, so it cannot decode AV1 on any Linux machine,
+# GPU or not. The macOS wheel of the same version bundles libdav1d and can.
+#
+# This is the question neither set above answers. FRAME_EXACT_CODECS says a
+# decoder emits one frame per packet; CHROME_149.codecs says a browser can play
+# the stream; both contain "av1" and are right to. This one says a decoder that
+# is not ours, in a process we do not configure, on a machine we did not build,
+# will be able to open the file at all. Keep the three apart.
+SOFTWARE_DECODABLE_CODECS: frozenset[str] = frozenset(
+    {"h264", "hevc", "mpeg4", "mpeg2video", "mjpeg", "vp8", "vp9", "ffv1", "prores"}
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Thresholds:
     """`max_gop_bytes` is the payload a seek may fetch before it costs 168 ms on
