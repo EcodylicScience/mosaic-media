@@ -27,7 +27,7 @@ the caller passes to `derive`. This module holds no opinion about any browser.
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 from .. import hwaccel
 from ..probe.facts import MediaFacts
@@ -37,10 +37,15 @@ from .errors import TranscodeError
 
 Target = Literal["analysis", "playback"]
 
-# The two encoders a re-encode can run on. `RecordedEncoder` adds the empty
-# string a copy remux carries, having encoded nothing.
-EncoderName = Literal["av1_nvenc", "libsvtav1"]
-RecordedEncoder = EncoderName | Literal[""]
+# The encoders a re-encode can run on. The two AV1 ones are what this package
+# chooses for itself; `EncoderName` is a plain `str` because the choice is
+# injectable and a caller may name one this package does not -- deliberately,
+# since naming a GPL encoder here would link it into every process that imports
+# this module, while a caller emitting it as an argv links nothing. See
+# `EncodingParameters.encoder`.
+AV1_ENCODERS: Final[tuple[str, ...]] = ("av1_nvenc", "libsvtav1")
+EncoderName = str
+RecordedEncoder = str
 
 _BASE: tuple[str, ...] = ("ffmpeg", "-hide_banner", "-v", "error", "-y")
 
@@ -144,6 +149,25 @@ class EncodingParameters:
     pixel_format: str
     keyframe_interval: int | None
     keep_audio: bool
+    encoder: str | None = None
+    """Which encoder to run, or None to choose an AV1 one as this package always has.
+
+    The seam that lets a caller target a different codec without this package
+    naming it. It exists because "which codec" is not a property of media at
+    all: it is a question about the *reader*, and the readers that matter -- an
+    external tool's decoder stack -- are things the caller knows about and this
+    package cannot.
+
+    None is not merely the default, it is the answer this package ships with:
+    AV1, chosen by `_selected_encoder` between the CPU and NVENC builds. A
+    caller supplying a name takes that choice over entirely, including the
+    hardware decision, because a mixed answer would be neither.
+
+    Injected rather than declared for the same reason `FRAME_EXACT_CODECS` is:
+    the policy belongs to the deployment. It also keeps the GPL encoders out of
+    this package's source, so its own suite stays runnable against the LGPL
+    ffmpeg its consumers deploy.
+    """
 
 
 # The analysis derivative is measured, not watched: encoder-default GOP, no
@@ -286,8 +310,14 @@ def _copy_remux_argv(
     )
 
 
-def _selected_encoder(*, allow_hardware: bool) -> EncoderName:
+def _selected_encoder(
+    *, allow_hardware: bool, requested: str | None = None
+) -> EncoderName:
     """The video encoder a re-encode runs on.
+
+    A *requested* encoder is taken verbatim and ends the question: the caller has
+    named a codec, and probing this package's own AV1 hardware encoder would
+    answer a different one.
 
     Hardware is taken only when the caller permits it and this machine can
     actually open the encoder. Permission alone is not enough, and neither is the
@@ -297,6 +327,8 @@ def _selected_encoder(*, allow_hardware: bool) -> EncoderName:
     Falling back to the CPU encoder is what the permission already sanctions --
     it permits hardware, it does not require it.
     """
+    if requested is not None:
+        return requested
     if allow_hardware and hwaccel.encoder_usable("av1_nvenc"):
         return "av1_nvenc"
     return "libsvtav1"
@@ -305,6 +337,14 @@ def _selected_encoder(*, allow_hardware: bool) -> EncoderName:
 def _encoder_args(
     encoding: EncodingParameters, encoder: EncoderName
 ) -> tuple[str, ...]:
+    """The codec arguments for *encoder*, on the scale that encoder reads.
+
+    NVENC rates with `-cq` and names its presets `p1`-`p7`; everything else here
+    rates with `-crf`. An injected encoder gets `-crf` and the CPU preset
+    number, which is what x264, x265 and SVT-AV1 all accept -- note the *scales*
+    differ between them even though the flag does not, so a caller changing the
+    encoder is choosing a new quality number too.
+    """
     if encoder == "av1_nvenc":
         return (
             "-c:v",
@@ -316,7 +356,7 @@ def _encoder_args(
         )
     return (
         "-c:v",
-        "libsvtav1",
+        encoder,
         "-preset",
         str(encoding.cpu_preset),
         "-crf",
@@ -419,7 +459,9 @@ def build_command(
     timestamp_fps = facts.declared_fps if facts.timing_source == "absent" else 0.0
     encoder_name: RecordedEncoder = ""
     if operation is Operation.REENCODE_AV1:
-        encoder_name = _selected_encoder(allow_hardware=allow_hardware)
+        encoder_name = _selected_encoder(
+            allow_hardware=allow_hardware, requested=encoding.encoder
+        )
         argv = _reencode_argv(
             source, destination, facts, encoding, encoder=encoder_name
         )
