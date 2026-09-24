@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "mosaic-media"
-version = "0.3.3"
+version = "0.3.4"
 description = "Media probing, transcode planning, and frame reading through system ffmpeg."
 readme = "README.md"
 requires-python = ">=3.12"
