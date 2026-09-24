@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [{ name = "Ecodylic Science" }]
+authors = [{ name = "Jacob Davidson" }, { name = "Paul Nuehrenberg" }]
 # No `License ::` trove classifier. `license` above is a PEP 639 SPDX
 # expression, and the two cannot coexist -- a build carrying both is rejected
 # rather than warned about.
