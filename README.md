@@ -441,17 +441,25 @@ PyAV on top.
 
 ## License
 
-Apache License 2.0 -- see [LICENSE](LICENSE).
+Copyright (C) 2026 Max-Planck-Gesellschaft zur Foerderung der Wissenschaften
+e.V., for the Max Planck Institute of Animal Behavior. Apache License 2.0 --
+see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 The package shells out to the system `ffmpeg` and `ffprobe` binaries and, for
 the `[io]` extra, uses `av`. Those components are not distributed with this
 package and carry their own licenses: FFmpeg is LGPL-2.1-or-later, or GPL if
-built with GPL-only components, and `av` is BSD-3-Clause.
+built with GPL-only components. PyAV's own code is BSD-3-Clause, but the `av`
+wheel on PyPI bundles FFmpeg libraries (LGPL-3.0-or-later as built) together
+with the x264 and x265 encoders, which are GPL-2.0-or-later, and loads them
+into the calling process. The wheel ships no license text for them.
 
-Nothing in the distributed package names a GPL-only encoder. `av` links FFmpeg
+Nothing in the distributed package names a GPL-only encoder: in-process
+encoding uses `libsvtav1`, or `av1_nvenc` on NVIDIA hardware. `av` links FFmpeg
 into the calling process, so an encoder named here would become a dependency of
-this package; the default `av` wheel also carries its own FFmpeg build, whose
-codec set is chosen by whoever built the wheel rather than by this package.
+this package; the default `av` wheel carries its own FFmpeg build, whose codec
+set is chosen by whoever built the wheel rather than by this package. The
+[Dockerfile](Dockerfile) builds an LGPL-only FFmpeg with PyAV compiled against
+it, for deployments that must avoid the GPL components.
 
 Redistributors bundling any of these are combining separately licensed works and
 should establish their own obligations rather than relying on this summary.

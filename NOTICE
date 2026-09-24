@@ -1,0 +1,12 @@
+mosaic-media
+Copyright (C) 2026 Max-Planck-Gesellschaft zur Foerderung der
+Wissenschaften e.V., for the Max Planck Institute of Animal Behavior
+
+Licensed under the Apache License, Version 2.0. The complete license text
+is in LICENSE.
+
+This package contains no third-party source code. It runs the system
+ffmpeg and ffprobe programs, which the user installs, and its io extra
+imports av (PyAV), whose PyPI wheel bundles its own FFmpeg build. These
+are separately licensed and are not distributed with this package; the
+License section of README.md describes their terms.
