@@ -44,14 +44,18 @@ ARG PYTHON_VERSION=3.13
 # mirror the asset to storage the build itself controls if it must not depend
 # on GitHub being reachable.
 
-# Pinned by release tag AND asset digest: the tag is immutable, the digest
+# Pinned by release tag AND asset digest: the tag names one build, the digest
 # catches a re-uploaded asset. Never track `latest` -- these are nightlies,
 # and identity digests are defined against libavformat's demuxer output, so
 # an ffmpeg change that alters that output re-mints every content_digest for
 # the affected container, with no code change and no file altered.
-ARG FFMPEG_RELEASE=autobuild-2026-07-30-13-32
-ARG FFMPEG_ASSET=ffmpeg-n8.1.2-32-gcfa62de001-linux64-lgpl-shared-8.1.tar.xz
-ARG FFMPEG_SHA256=74ef679aa7e4f8cdbd5193da3d99bf220a679f64d35daf078397081b789f150e
+#
+# Pin only the last build of a month. The repository's retention policy keeps
+# those for two years and deletes every other daily build after fourteen days,
+# so a mid-month pin stops downloading two weeks after it is chosen.
+ARG FFMPEG_RELEASE=autobuild-2026-07-31-14-10
+ARG FFMPEG_ASSET=ffmpeg-n8.1.2-34-g9b6c8969e0-linux64-lgpl-shared-8.1.tar.xz
+ARG FFMPEG_SHA256=c882a80f06617149198a98a07a0880a7e881953ae9f9cb931f5be09a4f93caae
 
 # n8.1 matches the libavcodec 62 ABI PyAV 18 is written against.
 ARG AV_VERSION=18.0.0
