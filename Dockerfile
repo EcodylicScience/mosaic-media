@@ -134,11 +134,12 @@ RUN uv venv /opt/venv && \
 # reach the runtime image: `--target runtime` builds without any of it, and
 # without paying for it.
 FROM python:${PYTHON_VERSION}-slim AS test
-# The value cfr.mp4 mints under this FFmpeg. Measured identical on FFmpeg 6.1,
-# 7.1 and 8.1 and on two machines, so it pins the demuxer rather than the build
-# host. A mismatch is a format break: bump IDENTITY_SCHEME and re-mint, never
-# edit this to make a build pass.
-ARG EXPECTED_CONTENT_DIGEST=9e5669d7a69f6e6b7521626738c9756d
+# The value cfr.mp4 mints under this FFmpeg and identity scheme 2. Measured
+# identical on FFmpeg 6.1, 7.1 and 8.1 and on two machines, so it pins the
+# demuxer rather than the build host. A mismatch is a format break: bump
+# IDENTITY_SCHEME and re-mint, never edit this to make a build pass. A scheme
+# bump re-mints this value too, since the scheme is hashed into the digest.
+ARG EXPECTED_CONTENT_DIGEST=34993be8d696870a365a3dfcd3fa8b84
 
 COPY --from=ffmpeg /opt/ffmpeg /opt/ffmpeg
 COPY --from=build /opt/venv /opt/venv
