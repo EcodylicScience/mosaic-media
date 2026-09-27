@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Literal
 
 import av
@@ -48,30 +49,36 @@ def codec_usable(name: str, mode: CodecMode) -> bool:
     return True
 
 
-def encode_succeeds(codec: str, destination: str) -> bool:
-    """Whether a two-frame encode through the named codec exits zero."""
-    encode = subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc=size=64x48:rate=30",
-            "-frames:v",
-            "2",
-            "-c:v",
-            codec,
-            "-f",
-            "mp4",
-            destination,
-        ],
-        capture_output=True,
-        text=True,
-    )
+def encode_succeeds(codec: str) -> bool:
+    """Whether a two-frame encode through the named codec exits zero.
+
+    Written into a directory of its own and discarded. A fixed path left behind by
+    one run -- the image build runs this as root -- cannot be overwritten by a later
+    run as another user, and that refusal would read as the encoder failing.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        encode = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=64x48:rate=30",
+                "-frames:v",
+                "2",
+                "-c:v",
+                codec,
+                "-f",
+                "mp4",
+                str(pathlib.Path(scratch) / "probe.mp4"),
+            ],
+            capture_output=True,
+            text=True,
+        )
     return encode.returncode == 0
 
 
@@ -225,12 +232,12 @@ check(
 #    zero exit here means the licensing premise has failed outright.
 # --------------------------------------------------------------------------
 check(
-    not encode_succeeds("libx264", "/tmp/gpl-probe.mp4"),
+    not encode_succeeds("libx264"),
     "encoding with libx264 fails, as it must",
     "encoding with libx264 SUCCEEDED: a GPL encoder is reachable",
 )
 check(
-    encode_succeeds("mpeg4", "/tmp/native-probe.mp4"),
+    encode_succeeds("mpeg4"),
     "encoding with the native mpeg4 encoder works",
     "encoding with mpeg4 failed: the CLI is unusable, so the libx264 result proves nothing",
 )
