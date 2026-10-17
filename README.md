@@ -148,7 +148,7 @@ downscale_to_jpeg("frame.png", "thumb.jpg", width=width, height=height)
 | Extra | Adds | Contents |
 | --- | --- | --- |
 | `mosaic-media` | standard library only | Probe, verdicts, transcode command construction and converter, thumbnails, capability probing. |
-| `mosaic-media[io]` | `numpy>=1.22`, `av>=18,<19` | In-process frame reader, seek index, multi-video reader, video writer. |
+| `mosaic-media[io]` | `numpy>=1.22`, `av>=18,<20` | In-process frame reader, seek index, multi-video reader, video writer. |
 | `mosaic-media[cli]` | `typer>=0.12` | The `mosaic-media` command line app. |
 
 The core is standard library only so the transcode runner can start on a machine

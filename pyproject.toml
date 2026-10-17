@@ -31,7 +31,7 @@ Source = "https://github.com/EcodylicScience/mosaic-media"
 Issues = "https://github.com/EcodylicScience/mosaic-media/issues"
 
 [project.optional-dependencies]
-io = ["numpy>=1.22", "av>=18,<19"]
+io = ["numpy>=1.22", "av>=18,<20"]
 cli = ["typer>=0.12"]
 
 [project.scripts]

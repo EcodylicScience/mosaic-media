@@ -125,7 +125,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "av", marker = "extra == 'io'", specifier = ">=18,<19" },
+    { name = "av", marker = "extra == 'io'", specifier = ">=18,<20" },
     { name = "numpy", marker = "extra == 'io'", specifier = ">=1.22" },
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.12" },
 ]
